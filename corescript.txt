@@ -20,6 +20,11 @@ local SNAPSHOT_KEY = "HamsterHub_ProfileSnapshot_V4"
 local STRATEGY_FILE_NAME = "Strat.txt"
 local AUTOSAVE_FILE_NAME = "Strat_Autosave.txt"
 local STRATEGY_FORMAT_VERSION = 4
+
+-- Roblox Studio local auto-start.
+-- Add a child ModuleScript named "Strat" under this LocalScript.
+local AUTO_START_LOCAL_STRATEGY = true
+local LOCAL_STRATEGY_MODULE_NAME = "Strat"
 local LINORIA_REPOSITORY =
 	"https://raw.githubusercontent.com/violin-suzutsuki/LinoriaLib/main/"
 local TOWER_MATCH_DISTANCE = 1.25
@@ -5286,6 +5291,58 @@ local function startAutoToiletHQ()
 		task.wait(0.5)
 	end
 end
+
+local function startLocalStrategyModule()
+	if not AUTO_START_LOCAL_STRATEGY then
+		return false
+	end
+
+	local strategyModule = script:FindFirstChild(
+		LOCAL_STRATEGY_MODULE_NAME
+	)
+
+	if not strategyModule then
+		setDebug(
+			"Strategy",
+			"Добавь дочерний ModuleScript Strat для автозапуска.",
+			"waiting"
+		)
+		return false
+	end
+
+	if not strategyModule:IsA("ModuleScript") then
+		setDebug(
+			"Strategy",
+			"Объект Strat должен быть ModuleScript.",
+			"error"
+		)
+		return false
+	end
+
+	task.defer(function()
+		local loaded, result = pcall(require, strategyModule)
+
+		if not loaded then
+			setDebug(
+				"Strategy error",
+				tostring(result),
+				"error"
+			)
+			warn("[HAMSTER HUB] Не удалось запустить Strat:", result)
+			return
+		end
+
+		setDebug(
+			"Strategy",
+			"Strat загружен. Replay запущен автоматически.",
+			"success"
+		)
+	end)
+
+	return true
+end
+
+startLocalStrategyModule()
 
 task.wait(2)
 
