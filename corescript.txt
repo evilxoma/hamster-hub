@@ -19,7 +19,7 @@ local VOTE_CONFIRMATION_TIMEOUT = 5
 local SNAPSHOT_KEY = "HamsterHub_ProfileSnapshot_V5"
 local STRATEGY_FILE_NAME = "Strat.txt"
 local AUTOSAVE_FILE_NAME = "Strat_Autosave.txt"
-local STRATEGY_FORMAT_VERSION = 5
+local STRATEGY_FORMAT_VERSION = 6
 local LINORIA_REPOSITORY =
 	"https://raw.githubusercontent.com/violin-suzutsuki/LinoriaLib/main/"
 local TOWER_MATCH_DISTANCE = 1.25
@@ -1598,68 +1598,174 @@ local function startHamsterStrategyPlayer()
 			or groups[groupName] ~= false
 	end
 
+
 	local function runLobbyAutomation()
 		local lobby = workspace:WaitForChild("LOBBY_", 30)
 
 		if not lobby then
 			return false,
-				"Текущий PlaceId не является поддерживаемым лобби."
+				"Текущий сервер не является поддерживаемым лобби."
 		end
 
-		local elevators = lobby:FindFirstChild("Elevators")
+		local elevators = lobby:WaitForChild("Elevators", 30)
 		local lobbyEvents =
-			ReplicatedStorage:FindFirstChild("Events")
+			ReplicatedStorage:WaitForChild("Events", 30)
 
-		local enterElevator = lobbyEvents
-			and lobbyEvents:FindFirstChild("EnterElevator")
-
-		local startElevator = lobbyEvents
-			and lobbyEvents:FindFirstChild("StartElevator")
-
-		if not elevators
-			or not enterElevator
-			or not startElevator then
+		if not elevators or not lobbyEvents then
 			return false,
-				"В лобби не найдены лифты или RemoteEvent."
+				"В лобби не найдены Elevators или Events."
+		end
+
+		local enterElevator =
+			lobbyEvents:FindFirstChild("EnterElevator")
+
+		local leaveElevator =
+			lobbyEvents:FindFirstChild("LeaveElevator")
+
+		local startElevator =
+			lobbyEvents:FindFirstChild("StartElevator")
+
+		if not enterElevator
+			or not startElevator
+			or not enterElevator:IsA("RemoteEvent")
+			or not startElevator:IsA("RemoteEvent") then
+			return false,
+				"Не найдены RemoteEvent EnterElevator/StartElevator."
+		end
+
+		local function trim(text)
+			return (
+				tostring(text or "")
+					:gsub("<.->", "")
+					:gsub("%s+", " ")
+					:match("^%s*(.-)%s*$")
+				or ""
+			)
+		end
+
+		local function normalized(text)
+			return string.lower(trim(text))
+		end
+
+		local function validChoice(value)
+			local text = trim(value)
+
+			if text == ""
+				or normalized(text) == "unknown"
+				or normalized(text) == "any" then
+				return nil
+			end
+
+			return text
 		end
 
 		local function mapName(elevator)
-			local label = elevator:FindFirstChild(
+			for _, objectName in ipairs({
 				"mapName",
-				true
-			)
+				"MapName",
+				"Title",
+				"Map",
+			}) do
+				local object = elevator:FindFirstChild(
+					objectName,
+					true
+				)
 
-			if label and label:IsA("TextLabel") then
-				return label.Text
+				if object then
+					if object:IsA("TextLabel")
+						or object:IsA("TextButton") then
+						local value = trim(object.Text)
+
+						if value ~= "" then
+							return value
+						end
+					elseif object:IsA("StringValue") then
+						local value = trim(object.Value)
+
+						if value ~= "" then
+							return value
+						end
+					end
+				end
 			end
 
-			return elevator:GetAttribute("Title")
+			for _, attributeName in ipairs({
+				"Title",
+				"Map",
+				"MapName",
+			}) do
+				local value =
+					elevator:GetAttribute(attributeName)
+
+				if typeof(value) == "string"
+					and trim(value) ~= "" then
+					return trim(value)
+				end
+			end
+
+			return ""
 		end
 
 		local function playerCount(elevator)
-			local count = elevator:GetAttribute("Players")
+			for _, attributeName in ipairs({
+				"Players",
+				"PlayerCount",
+				"CurrentPlayers",
+			}) do
+				local count =
+					elevator:GetAttribute(attributeName)
 
-			if typeof(count) == "number" then
-				return count
+				if typeof(count) == "number" then
+					return count
+				end
 			end
 
 			local status =
 				elevator:FindFirstChild("StatusGui", true)
 
-			local title = status
-				and status:FindFirstChild("Title")
+			if status then
+				for _, descendant in ipairs(
+					status:GetDescendants()
+				) do
+					if descendant:IsA("TextLabel")
+						or descendant:IsA("TextButton") then
+						local parsed = string.match(
+							descendant.Text,
+							"(%d+)%s*/%s*%d+"
+						)
 
-			local parsed = title
-				and string.match(title.Text, "^(%d+)%s*/")
+						if parsed then
+							return tonumber(parsed) or 0
+						end
+					end
+				end
+			end
 
-			return tonumber(parsed) or 0
+			return 0
 		end
 
 		local function floorPart(elevator)
-			local base = elevator:FindFirstChild("Base", true)
+			for _, name in ipairs({
+				"Base",
+				"Floor",
+				"Platform",
+				"TeleportPart",
+			}) do
+				local part =
+					elevator:FindFirstChild(name, true)
 
-			if base and base:IsA("BasePart") then
-				return base
+				if part and part:IsA("BasePart") then
+					return part
+				end
+			end
+
+			for _, descendant in ipairs(
+				elevator:GetDescendants()
+			) do
+				if descendant:IsA("BasePart")
+					and descendant.CanCollide then
+					return descendant
+				end
 			end
 
 			return elevator:FindFirstChildWhichIsA(
@@ -1668,36 +1774,100 @@ local function startHamsterStrategyPlayer()
 			)
 		end
 
-		local desiredMap = tostring(STRATEGY.Map or "")
+		local function elevatorId(elevator)
+			local config =
+				elevator:FindFirstChild("Config")
+
+			if config then
+				for _, name in ipairs({
+					"idk",
+					"Id",
+					"ID",
+					"ElevatorId",
+				}) do
+					local object =
+						config:FindFirstChild(name)
+
+					if object and object:IsA("ValueBase") then
+						return object.Value
+					end
+				end
+			end
+
+			for _, attributeName in ipairs({
+				"Id",
+				"ID",
+				"ElevatorId",
+			}) do
+				local value =
+					elevator:GetAttribute(attributeName)
+
+				if value ~= nil then
+					return value
+				end
+			end
+
+			return elevator.Name
+		end
+
+		local desiredMap = validChoice(STRATEGY.Map)
+
+		if not desiredMap then
+			return false,
+				"В стратегии не указана конкретная Map."
+		end
+
+		local maxPlayers =
+			tonumber(STRATEGY.MaxElevatorPlayers) or 2
+
+		local character =
+			player.Character or player.CharacterAdded:Wait()
+
+		local root =
+			character:WaitForChild("HumanoidRootPart", 15)
+
+		if not root then
+			return false, "Персонаж не загрузился."
+		end
+
+		local ignored = {}
 		local searchStartedAt = os.clock()
 		local selected = nil
 
 		repeat
 			local candidates = {}
 
-			for _, elevator in ipairs(elevators:GetChildren()) do
-				local floor = elevator:IsA("Model")
-					and floorPart(elevator)
-					or nil
+			for _, elevator in ipairs(
+				elevators:GetChildren()
+			) do
+				if not ignored[elevator]
+					and elevator:IsA("Model") then
+					local floor = floorPart(elevator)
+					local currentMap = mapName(elevator)
+					local count = playerCount(elevator)
 
-				local elevatorMap = tostring(
-					mapName(elevator) or ""
-				)
-
-				if floor
-					and string.lower(elevatorMap)
-						== string.lower(desiredMap)
-					and playerCount(elevator) < 2 then
-					table.insert(candidates, {
-						Elevator = elevator,
-						Floor = floor,
-						Players = playerCount(elevator),
-					})
+					if floor
+						and normalized(currentMap)
+							== normalized(desiredMap)
+						and count < maxPlayers then
+						table.insert(candidates, {
+							Elevator = elevator,
+							Floor = floor,
+							Players = count,
+							Distance = (
+								root.Position - floor.Position
+							).Magnitude,
+						})
+					end
 				end
 			end
 
 			table.sort(candidates, function(a, b)
-				return a.Players < b.Players
+				if a.Players ~= b.Players then
+					return a.Players < b.Players
+				end
+
+				return a.Distance < b.Distance
 			end)
 
 			selected = candidates[1]
@@ -1710,35 +1880,19 @@ local function startHamsterStrategyPlayer()
 				)
 				task.wait(1)
 			end
-		until selected or os.clock() - searchStartedAt >= 90
+		until selected
+			or os.clock() - searchStartedAt
+				>= (tonumber(STRATEGY.ElevatorSearchTimeout) or 90)
 
 		if not selected then
 			return false,
 				"Свободный лифт карты "
 					.. desiredMap
-					.. " не найден за 90 секунд."
+					.. " не найден."
 		end
 
-		local character =
-			player.Character or player.CharacterAdded:Wait()
-
-		local root =
-			character:WaitForChild("HumanoidRootPart", 15)
-
-		if not root then
-			return false, "Персонаж не загрузился."
-		end
-
-		local config =
-			selected.Elevator:FindFirstChild("Config")
-
-		local idValue = config
-			and config:FindFirstChild("idk")
-
-		local elevatorId = idValue
-			and idValue:IsA("StringValue")
-			and idValue.Value
-			or selected.Elevator.Name
+		local selectedId =
+			elevatorId(selected.Elevator)
 
 		character:PivotTo(
 			selected.Floor.CFrame
@@ -1749,78 +1903,234 @@ local function startHamsterStrategyPlayer()
 				)
 		)
 
-		task.wait(0.25)
-		enterElevator:FireServer(elevatorId)
-
-		local entryStartedAt = os.clock()
-
-		while playerCount(selected.Elevator)
-			<= selected.Players
-			and os.clock() - entryStartedAt < 4 do
-			task.wait(0.1)
-		end
-
-		local desiredDifficulty = tostring(
-			STRATEGY.Difficulty or ""
+		log(
+			"Перемещён к лифту карты "
+				.. desiredMap
+				.. "."
 		)
 
-		if STRATEGY.AutoSelectDifficulty ~= false
-			and desiredDifficulty ~= ""
-			and desiredDifficulty ~= "Unknown"
-			and desiredDifficulty ~= "Any" then
-			local difficultyRemote = nil
+		task.wait(0.25)
+		enterElevator:FireServer(selectedId)
 
-			for _, remoteName in ipairs({
-				"VoteForDifficulty",
-				"VoteDifficulty",
-				"SelectDifficulty",
-				"SetDifficulty",
-				"DifficultyVote",
-			}) do
-				local candidate = lobbyEvents:FindFirstChild(
-					remoteName,
-					true
-				)
+		local entryStartedAt = os.clock()
+		local entered = false
 
-				if candidate
-					and (candidate:IsA("RemoteEvent")
-						or candidate:IsA("RemoteFunction")) then
-					difficultyRemote = candidate
-					break
+		repeat
+			if playerCount(selected.Elevator)
+				> selected.Players then
+				entered = true
+				break
+			end
+
+			task.wait(0.1)
+		until os.clock() - entryStartedAt
+			>= (tonumber(STRATEGY.ElevatorEnterTimeout) or 6)
+
+		if not entered then
+			return false,
+				"Сервер не подтвердил вход в лифт "
+					.. selected.Elevator.Name
+					.. "."
+		end
+
+		if playerCount(selected.Elevator) > maxPlayers then
+			if leaveElevator
+				and leaveElevator:IsA("RemoteEvent") then
+				leaveElevator:FireServer(selectedId)
+			end
+
+			return false,
+				"Выбранный лифт заполнился."
+		end
+
+		local desiredMode = validChoice(STRATEGY.Mode)
+		local desiredDifficulty = nil
+
+		if STRATEGY.AutoSelectDifficulty ~= false then
+			desiredDifficulty =
+				validChoice(STRATEGY.Difficulty)
+		end
+
+		local function findRemote(names)
+			for _, name in ipairs(names) do
+				local remote =
+					lobbyEvents:FindFirstChild(name, true)
+
+				if remote
+					and (remote:IsA("RemoteEvent")
+						or remote:IsA("RemoteFunction")) then
+					return remote
 				end
 			end
 
-			if difficultyRemote then
-				pcall(function()
-					if difficultyRemote:IsA("RemoteEvent") then
-						difficultyRemote:FireServer(
-							desiredDifficulty
-						)
-					else
-						difficultyRemote:InvokeServer(
-							desiredDifficulty
-						)
-					end
-				end)
-
-				task.wait(0.2)
-			end
+			return nil
 		end
 
-		startElevator:FireServer(elevatorId)
+		local function sendRemote(remote, value)
+			if not remote or not value then
+				return false
+			end
+
+			return pcall(function()
+				if remote:IsA("RemoteEvent") then
+					remote:FireServer(value)
+				else
+					remote:InvokeServer(value)
+				end
+			end)
+		end
+
+		local function currentSelection(names)
+			local info = workspace:FindFirstChild("Info")
+
+			if not info then
+				return ""
+			end
+
+			for _, name in ipairs(names) do
+				local object = info:FindFirstChild(name)
+
+				if object and object:IsA("ValueBase") then
+					return trim(object.Value)
+				end
+			end
+
+			return ""
+		end
+
+		startElevator:FireServer(selectedId)
 
 		log(
-			"Запущен лифт "
-				.. tostring(STRATEGY.Map)
-				.. "."
+			"Лифт карты "
+				.. desiredMap
+				.. " запущен."
 		)
+
+		local selectionTimeout =
+			tonumber(STRATEGY.LobbySelectionTimeout) or 30
+
+		local selectionStartedAt = os.clock()
+		local lastModeRequest = 0
+		local lastDifficultyRequest = 0
+		local modeConfirmed = desiredMode == nil
+		local difficultyConfirmed =
+			desiredDifficulty == nil
+
+		repeat
+			if desiredMode and not modeConfirmed then
+				local currentMode = currentSelection({
+					"Mode",
+					"GameMode",
+					"SelectedMode",
+				})
+
+				if normalized(currentMode)
+					== normalized(desiredMode) then
+					modeConfirmed = true
+					log(
+						"Режим выбран: "
+							.. desiredMode
+							.. "."
+					)
+				elseif os.clock() - lastModeRequest >= 0.75 then
+					lastModeRequest = os.clock()
+
+					local modeRemote = findRemote({
+						"VoteForMap",
+						"VoteForMode",
+						"SelectMode",
+						"SetMode",
+					})
+
+					if sendRemote(modeRemote, desiredMode) then
+						log(
+							"Отправляю выбор режима "
+								.. desiredMode
+								.. "."
+						)
+					end
+				end
+			end
+
+			if desiredDifficulty
+				and not difficultyConfirmed then
+				local currentDifficulty =
+					currentSelection({
+						"Difficulty",
+						"DifficultyName",
+						"DifficultyMode",
+						"SelectedDifficulty",
+					})
+
+				if normalized(currentDifficulty)
+					== normalized(desiredDifficulty) then
+					difficultyConfirmed = true
+					log(
+						"Сложность выбрана: "
+							.. desiredDifficulty
+							.. "."
+					)
+				elseif os.clock()
+					- lastDifficultyRequest >= 0.75 then
+					lastDifficultyRequest = os.clock()
+
+					local difficultyRemote = findRemote({
+						"VoteForDifficulty",
+						"VoteDifficulty",
+						"SelectDifficulty",
+						"SetDifficulty",
+						"DifficultyVote",
+					})
+
+					if sendRemote(
+						difficultyRemote,
+						desiredDifficulty
+					) then
+						log(
+							"Отправляю выбор сложности "
+								.. desiredDifficulty
+								.. "."
+						)
+					end
+				end
+			end
+
+			if modeConfirmed and difficultyConfirmed then
+				break
+			end
+
+			if not workspace:FindFirstChild("LOBBY_") then
+				break
+			end
+
+			task.wait(0.15)
+		until os.clock() - selectionStartedAt
+			>= selectionTimeout
+
+		if desiredMode and not modeConfirmed then
+			fail(
+				"Не удалось подтвердить режим "
+					.. desiredMode
+					.. " до запуска матча."
+			)
+		end
+
+		if desiredDifficulty
+			and not difficultyConfirmed then
+			fail(
+				"Не удалось подтвердить сложность "
+					.. desiredDifficulty
+					.. " до запуска матча."
+			)
+		end
 
 		return true
 	end
 
-	if STRATEGY.PlaceId
-		and STRATEGY.PlaceId ~= 0
-		and game.PlaceId ~= STRATEGY.PlaceId then
+	local lobbyPresent =
+		workspace:FindFirstChild("LOBBY_") ~= nil
+
+	if lobbyPresent then
 		if STRATEGY.AutoEnterMatch == false then
 			fail("Автовход на карту отключён в стратегии.")
 			environment.HamsterStrategyPlayerRunning = false
@@ -1831,9 +2141,23 @@ local function startHamsterStrategyPlayer()
 
 		if not success then
 			fail(lobbyError)
-			environment.HamsterStrategyPlayerRunning = false
 		end
 
+		environment.HamsterStrategyPlayerRunning = false
+		return
+	end
+
+	if STRATEGY.PlaceId
+		and STRATEGY.PlaceId ~= 0
+		and game.PlaceId ~= STRATEGY.PlaceId then
+		fail(
+			"PlaceId не совпадает со стратегией: нужен "
+				.. tostring(STRATEGY.PlaceId)
+				.. ", сейчас "
+				.. tostring(game.PlaceId)
+				.. "."
+		)
+		environment.HamsterStrategyPlayerRunning = false
 		return
 	end
 
@@ -1873,7 +2197,7 @@ local function startHamsterStrategyPlayer()
 	local RETRY_DELAY = 0.35
 	local POSITION_TOLERANCE = 1.5
 	local SPAWN_CONFIRM_TIMEOUT = 3.5
-	local SUPPORTED_FORMAT_VERSION = 5
+	local SUPPORTED_FORMAT_VERSION = 6
 	local towerRegistry = {}
 	local towerUnitIds = {}
 
@@ -3277,6 +3601,10 @@ local function serializeStrategy()
 			.. ",",
 		"\tAutoEnterMatch = true,",
 		"\tAutoSelectDifficulty = true,",
+		"\tMaxElevatorPlayers = 2,",
+		"\tElevatorSearchTimeout = 90,",
+		"\tElevatorEnterTimeout = 6,",
+		"\tLobbySelectionTimeout = 30,",
 		"\tWaitForMoney = true,",
 		"\tExecutionRule = \"TimeAndMoney\",",
 		"\tStrictUnitBinding = true,",
@@ -3304,7 +3632,7 @@ local function serializeStrategy()
 		"\t\tVersion = "
 			.. string.format(
 				"%q",
-				"5.0"
+				"6.0"
 			)
 			.. ",",
 		"\t\tFormatVersion = "
@@ -4721,7 +5049,7 @@ local function initializeLinoriaUi()
 		end)
 
 		local Window = Library:CreateWindow({
-			Title = "Hamster Hub | Recorder V3",
+			Title = "Hamster Hub | Recorder V6",
 			Center = true,
 			AutoShow = true,
 			TabPadding = 8,
@@ -5084,549 +5412,9 @@ task.spawn(function()
 end)
 
 
-task.spawn(function()
-	local eventsObject = ReplicatedStorage:WaitForChild("Events")
-	local voteForMapObject = eventsObject:WaitForChild("VoteForMap")
 
-	if not voteForMapObject:IsA("RemoteEvent") then
-		setDebug(
-			"Ошибка",
-			"VoteForMap не является RemoteEvent.",
-			"error"
-		)
-		return
-	end
-
-	local updateVoteCountObject = eventsObject:FindFirstChild(
-		"UpdateVoteCount"
-	)
-
-	if not updateVoteCountObject then
-		updateVoteCountObject = eventsObject:WaitForChild(
-			"UpdateVoteCount",
-			30
-		)
-	end
-
-	local voteConfirmed = false
-
-	local function isInterfaceVisible(object)
-		local current = object
-
-		while current do
-			if current:IsA("GuiObject")
-				and not current.Visible then
-				return false
-			end
-
-			if current:IsA("ScreenGui")
-				and not current.Enabled then
-				return false
-			end
-
-			current = current.Parent
-		end
-
-		return true
-	end
-
-	local function getBossRushButton()
-		local gameGui = playerGui:FindFirstChild("GameGui")
-
-		if not gameGui then
-			return nil
-		end
-
-		local voteFrame = gameGui:FindFirstChild(
-			"VoteFrame",
-			true
-		)
-
-		if not voteFrame then
-			return nil
-		end
-
-		local bossRushMode = voteFrame:FindFirstChild(
-			"BossRushMode",
-			true
-		)
-
-		if not bossRushMode then
-			return nil
-		end
-
-		local voteFrameContainer =
-			bossRushMode:FindFirstChild(
-				"Vote Frame",
-				true
-			)
-
-		if not voteFrameContainer then
-			return nil
-		end
-
-		local voteButton =
-			voteFrameContainer:FindFirstChild(
-				"Vote",
-				true
-			)
-
-		if voteButton and voteButton:IsA("GuiButton") then
-			return voteButton
-		end
-
-		return nil
-	end
-
-	local function hasOurBossRushVote(voteInformation)
-		if typeof(voteInformation) ~= "table" then
-			return false
-		end
-
-		local bossRushVotes =
-			voteInformation[VOTE_MODE_NAME]
-
-		if typeof(bossRushVotes) ~= "table" then
-			return false
-		end
-
-		for _, userId in pairs(bossRushVotes) do
-			if tonumber(userId) == player.UserId then
-				return true
-			end
-		end
-
-		return false
-	end
-
-	if updateVoteCountObject
-		and updateVoteCountObject:IsA("RemoteEvent") then
-		updateVoteCountObject.OnClientEvent:Connect(
-			function(voteInformation)
-				if hasOurBossRushVote(voteInformation) then
-					voteConfirmed = true
-
-					setDebug(
-						"Готово",
-						"Boss Rush выбран. Колода и баланс загружены.",
-						"success"
-					)
-				end
-			end
-		)
-	end
-
-	setDebug(
-		"Ожидание",
-		"Жду появление голосования Boss Rush...",
-		"waiting"
-	)
-
-	local voteButton = nil
-
-	while not voteButton do
-		local foundButton = getBossRushButton()
-
-		if foundButton
-			and isInterfaceVisible(foundButton) then
-			voteButton = foundButton
-			break
-		end
-
-		task.wait(0.25)
-	end
-
-	setDebug(
-		"Голосование",
-		"Boss Rush найден. Отправляю голос..."
-	)
-
-	task.wait(0.3)
-	voteForMapObject:FireServer(VOTE_MODE_NAME)
-
-	local confirmationStarted = os.clock()
-
-	while not voteConfirmed
-		and os.clock() - confirmationStarted
-			< VOTE_CONFIRMATION_TIMEOUT do
-		task.wait(0.1)
-	end
-
-	if not voteConfirmed
-		and voteButton
-		and isInterfaceVisible(voteButton) then
-		setDebug(
-			"Повторная попытка",
-			"Повторно голосую за Boss Rush..."
-		)
-
-		voteForMapObject:FireServer(VOTE_MODE_NAME)
-		task.wait(1)
-
-		if not voteConfirmed then
-			setDebug(
-				"Голос отправлен",
-				"Запрос Boss Rush отправлен серверу.",
-				"success"
-			)
-		end
-	end
-end)
-
-
-local lobby = workspace:FindFirstChild("LOBBY_")
-
-if not lobby then
-	setDebug(
-		"Игровой режим",
-		"Показываю сохранённую колоду и жду голосование.",
-		"waiting"
-	)
-	return
-end
-
-local elevatorsFolder = lobby:WaitForChild("Elevators")
-local events = ReplicatedStorage:WaitForChild("Events")
-
-local enterElevatorEvent =
-	events:WaitForChild("EnterElevator")
-
-local leaveElevatorEvent =
-	events:WaitForChild("LeaveElevator")
-
-local startElevatorEvent =
-	events:WaitForChild("StartElevator")
-
-if not enterElevatorEvent:IsA("RemoteEvent")
-	or not leaveElevatorEvent:IsA("RemoteEvent")
-	or not startElevatorEvent:IsA("RemoteEvent") then
-	setDebug(
-		"Ошибка",
-		"Не найдены RemoteEvent управления лифтом.",
-		"error"
-	)
-	return
-end
-
-local function getCharacter()
-	local character =
-		player.Character or player.CharacterAdded:Wait()
-
-	character:WaitForChild("HumanoidRootPart")
-	return character
-end
-
-local function getElevatorMapName(elevator)
-	local mapLabel = elevator:FindFirstChild(
-		"mapName",
-		true
-	)
-
-	if mapLabel and mapLabel:IsA("TextLabel") then
-		return mapLabel.Text
-	end
-
-	local titleAttribute =
-		elevator:GetAttribute("Title")
-
-	if typeof(titleAttribute) == "string" then
-		return titleAttribute
-	end
-
-	return nil
-end
-
-local function getElevatorPlayerCount(elevator)
-	local attributeValue =
-		elevator:GetAttribute("Players")
-
-	if typeof(attributeValue) == "number" then
-		return attributeValue
-	end
-
-	local statusGui = elevator:FindFirstChild(
-		"StatusGui",
-		true
-	)
-
-	local titleLabel =
-		statusGui and statusGui:FindFirstChild("Title")
-
-	if titleLabel and titleLabel:IsA("TextLabel") then
-		local currentPlayers = string.match(
-			titleLabel.Text,
-			"^(%d+)%s*/"
-		)
-
-		if currentPlayers then
-			return tonumber(currentPlayers) or 0
-		end
-	end
-
-	return 0
-end
-
-local function getElevatorId(elevator)
-	local config = elevator:FindFirstChild("Config")
-	local idValue =
-		config and config:FindFirstChild("idk")
-
-	if idValue and idValue:IsA("StringValue") then
-		return idValue.Value
-	end
-
-	return elevator.Name
-end
-
-local function getElevatorFloor(elevator)
-	local base = elevator:FindFirstChild("Base", true)
-
-	if base and base:IsA("BasePart") then
-		return base
-	end
-
-	for _, descendant in ipairs(elevator:GetDescendants()) do
-		if descendant:IsA("BasePart")
-			and descendant.CanCollide then
-			return descendant
-		end
-	end
-
-	return nil
-end
-
-local function isToiletHQElevator(elevator)
-	return elevator:IsA("Model")
-		and getElevatorMapName(elevator) == TARGET_MAP
-		and getElevatorFloor(elevator) ~= nil
-end
-
-local function findFreeElevator(ignoredElevators)
-	local character = getCharacter()
-	local root =
-		character:FindFirstChild("HumanoidRootPart")
-
-	if not root or not root:IsA("BasePart") then
-		return nil
-	end
-
-	local candidates = {}
-
-	for _, elevatorObject in ipairs(
-		elevatorsFolder:GetChildren()
-	) do
-		if ignoredElevators[elevatorObject] then
-			continue
-		end
-
-		if not elevatorObject:IsA("Model") then
-			continue
-		end
-
-		if not isToiletHQElevator(elevatorObject) then
-			continue
-		end
-
-		local currentPlayers =
-			getElevatorPlayerCount(elevatorObject)
-
-		if currentPlayers
-			>= START_IF_PLAYERS_BELOW then
-			continue
-		end
-
-		local floor = getElevatorFloor(elevatorObject)
-
-		if not floor then
-			continue
-		end
-
-		table.insert(candidates, {
-			Elevator = elevatorObject,
-			Players = currentPlayers,
-			Distance = (
-				root.Position - floor.Position
-			).Magnitude,
-		})
-	end
-
-	table.sort(candidates, function(a, b)
-		if a.Players ~= b.Players then
-			return a.Players < b.Players
-		end
-
-		return a.Distance < b.Distance
-	end)
-
-	if candidates[1] then
-		return candidates[1].Elevator
-	end
-
-	return nil
-end
-
-local function moveIntoElevator(elevator)
-	local character = getCharacter()
-	local floor = getElevatorFloor(elevator)
-
-	if not floor then
-		error(
-			"Не найдена деталь пола в "
-				.. elevator:GetFullName()
-		)
-	end
-
-	setDebug(
-		"Перемещение",
-		"Перемещаю игрока в " .. elevator.Name .. "..."
-	)
-
-	local height =
-		floor.Size.Y / 2 + TELEPORT_HEIGHT
-
-	character:PivotTo(
-		floor.CFrame * CFrame.new(0, height, 0)
-	)
-end
-
-local function waitForElevatorEntry(
-	elevator,
-	playersBeforeEntry
+setDebug(
+	"Готово",
+	"Hub загружен. Автовходом управляет карта и сложность из Strat.",
+	"success"
 )
-	local startedAt = os.clock()
-
-	setDebug(
-		"Проверка входа",
-		"Ожидаю подтверждение входа в лифт...",
-		"waiting"
-	)
-
-	repeat
-		local currentPlayers =
-			getElevatorPlayerCount(elevator)
-
-		if currentPlayers > playersBeforeEntry then
-			return currentPlayers
-		end
-
-		task.wait(0.1)
-	until os.clock() - startedAt >= ENTER_TIMEOUT
-
-	return getElevatorPlayerCount(elevator)
-end
-
-local function startAutoToiletHQ()
-	local ignoredElevators = {}
-
-	while true do
-		setDebug(
-			"Поиск лифта",
-			"Ищу свободный лифт Toilet HQ...",
-			"waiting"
-		)
-
-		local elevator =
-			findFreeElevator(ignoredElevators)
-
-		if not elevator then
-			setDebug(
-				"Лифт не найден",
-				"Свободный Toilet HQ не найден.",
-				"error"
-			)
-			return false
-		end
-
-		ignoredElevators[elevator] = true
-
-		local elevatorId =
-			getElevatorId(elevator)
-
-		local playersBeforeEntry =
-			getElevatorPlayerCount(elevator)
-
-		setDebug(
-			"Лифт найден",
-			elevator.Name
-				.. " • игроков: "
-				.. tostring(playersBeforeEntry)
-		)
-
-		moveIntoElevator(elevator)
-		task.wait(0.25)
-
-		setDebug(
-			"Вход в лифт",
-			"Отправляю EnterElevator..."
-		)
-
-		enterElevatorEvent:FireServer(elevatorId)
-
-		local currentPlayers =
-			waitForElevatorEntry(
-				elevator,
-				playersBeforeEntry
-			)
-
-		task.wait(0.25)
-
-		currentPlayers =
-			getElevatorPlayerCount(elevator)
-
-		if currentPlayers
-			< START_IF_PLAYERS_BELOW then
-
-			setDebug(
-				"Сохранение",
-				"Сохраняю колоду, монеты и гемы..."
-			)
-
-			captureDeck()
-			captureLobbyCurrencies()
-			renderProfile()
-			saveSnapshot()
-
-			task.wait(0.2)
-
-			setDebug(
-				"Запуск",
-				"Запускаю Toilet HQ • игроков: "
-					.. tostring(currentPlayers)
-			)
-
-			startElevatorEvent:FireServer(elevatorId)
-
-			setDebug(
-				"Лифт запущен",
-				"Данные сохранены. Жду Boss Rush...",
-				"success"
-			)
-
-			return true
-		end
-
-		setDebug(
-			"Лифт занят",
-			"В лифте уже "
-				.. tostring(currentPlayers)
-				.. " игроков. Ищу другой...",
-			"waiting"
-		)
-
-		leaveElevatorEvent:FireServer(elevatorId)
-		task.wait(0.5)
-	end
-end
-
-task.wait(2)
-
-local success, errorMessage =
-	pcall(startAutoToiletHQ)
-
-if not success then
-	setDebug(
-		"Ошибка",
-		tostring(errorMessage),
-		"error"
-	)
-end
