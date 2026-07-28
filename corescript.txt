@@ -1,4 +1,3 @@
-
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
@@ -20,7 +19,7 @@ local VOTE_CONFIRMATION_TIMEOUT = 5
 local SNAPSHOT_KEY = "HamsterHub_ProfileSnapshot_V4"
 local STRATEGY_FILE_NAME = "Strat.txt"
 local AUTOSAVE_FILE_NAME = "Strat_Autosave.txt"
-local STRATEGY_FORMAT_VERSION = 3
+local STRATEGY_FORMAT_VERSION = 4
 local LINORIA_REPOSITORY =
 	"https://raw.githubusercontent.com/violin-suzutsuki/LinoriaLib/main/"
 local TOWER_MATCH_DISTANCE = 1.25
@@ -1114,7 +1113,7 @@ local towerIds = {}
 local nextTowerId = 1
 local gameEndHandled = false
 local recordingStartWave = 0
-local recordingStartTiming = "00:00"
+local recordingStartTiming = "00:00.00"
 local recordingCreatedAt = ""
 local lastRecordedSkipWave = nil
 local lastRecordedSpeed = nil
@@ -1221,7 +1220,7 @@ local function getOrAssignTowerId(tower, preferredId)
 	return unitId
 end
 
-local function getTowerSnapshot(tower)
+local function getTowerSnapshot(tower, deferUnitId)
 	if not tower or not tower:IsA("Model") then
 		return nil
 	end
@@ -1267,9 +1266,18 @@ local function getTowerSnapshot(tower)
 		components[index] = roundNumber(component, 6)
 	end
 
+	local captureInfo = workspace:FindFirstChild("Info")
+	local capturedTiming = getValue(captureInfo, "Time")
+
 	return {
 		Model = tower,
-		UnitId = getOrAssignTowerId(tower),
+		UnitId = deferUnitId
+			and towerIds[tower]
+			or (
+				not deferUnitId
+				and getOrAssignTowerId(tower)
+				or nil
+			),
 		Name = tostring(towerName),
 		Template = tower.Name,
 		Level = level,
@@ -1281,6 +1289,10 @@ local function getTowerSnapshot(tower)
 		),
 		Position = towerCFrame.Position,
 		CFrame = components,
+		Wave = tonumber(getValue(captureInfo, "Wave")) or 0,
+		Timing = capturedTiming ~= nil
+			and tostring(capturedTiming)
+			or "",
 		CapturedAt = os.clock(),
 	}
 end
@@ -1329,8 +1341,6 @@ local function updateRecorderStatus()
 	if recording then
 		statusText = "Запись идёт • действий: "
 			.. tostring(#recordedActions)
-			.. " • группа: "
-			.. currentActionGroup
 
 		recorderStatus.Text = statusText
 
@@ -1356,7 +1366,7 @@ local function updateRecorderStatus()
 end
 
 local function commitRecordedAction(action)
-	action.Group = action.Group or currentActionGroup
+	action.Group = nil
 
 	table.insert(recordedActions, action)
 	updateRecorderStatus()
@@ -1557,6 +1567,17 @@ local function startHamsterStrategyPlayer()
 	end
 
 	local function isActionGroupEnabled(action)
+		local formatVersion = tonumber(
+			STRATEGY.FormatVersion
+				or (typeof(STRATEGY.Metadata) == "table"
+					and STRATEGY.Metadata.FormatVersion)
+				or 1
+		) or 1
+
+		if formatVersion >= 4 then
+			return true
+		end
+
 		local groupName = tostring(
 			action.Group or "Early Game"
 		)
@@ -1767,8 +1788,10 @@ local function startHamsterStrategyPlayer()
 	local MAX_RETRIES = 20
 	local RETRY_DELAY = 0.35
 	local POSITION_TOLERANCE = 1.5
-	local SUPPORTED_FORMAT_VERSION = 3
+	local SPAWN_CONFIRM_TIMEOUT = 3.5
+	local SUPPORTED_FORMAT_VERSION = 4
 	local towerRegistry = {}
+	local towerUnitIds = {}
 
 	local function readValue(container, name)
 		local valueObject =
@@ -1910,6 +1933,7 @@ local function startHamsterStrategyPlayer()
 
 		if STRATEGY.Difficulty
 			and STRATEGY.Difficulty ~= "Unknown"
+			and STRATEGY.Difficulty ~= "Any"
 			and difficultyName ~= ""
 			and difficultyName ~= STRATEGY.Difficulty then
 			return false,
@@ -1968,6 +1992,42 @@ local function startHamsterStrategyPlayer()
 			end
 		end
 
+		if formatVersion >= 4 then
+			local placedUnitIds = {}
+
+			for index, action in ipairs(STRATEGY.Actions or {}) do
+				local actionType = tostring(action.Type or "")
+				local needsUnitId = actionType == "Place"
+					or actionType == "Upgrade"
+					or actionType == "Sell"
+					or actionType == "Target"
+				local unitId = tonumber(action.UnitId)
+
+				if needsUnitId and not unitId then
+					return false,
+						"В действии #"
+							.. tostring(index)
+							.. " отсутствует UnitId."
+				end
+
+				if actionType == "Place" then
+					if placedUnitIds[unitId] then
+						return false,
+							"UnitId #"
+								.. tostring(unitId)
+								.. " используется несколькими Place."
+					end
+
+					placedUnitIds[unitId] = true
+				elseif needsUnitId and not placedUnitIds[unitId] then
+					return false,
+						"Действие #"
+							.. tostring(index)
+							.. " ссылается на UnitId до Place."
+				end
+			end
+		end
+
 		return true
 	end
 
@@ -2020,20 +2080,152 @@ local function startHamsterStrategyPlayer()
 		return position and CFrame.new(position) or nil
 	end
 
-	local function findTower(action)
+	local function normalizedName(value)
+		return string.lower(tostring(value or ""))
+	end
+
+	local function towerMatchesAction(tower, action)
+		if not tower then
+			return false
+		end
+
+		local config = tower:FindFirstChild("Config")
+		local towerName = normalizedName(
+			readValue(config, "TowerName")
+				or readValue(config, "UnitName")
+				or tower.Name
+		)
+		local templateName = normalizedName(tower.Name)
+		local expectedNames = {
+			action.Unit,
+			action.PreviousUnit,
+			action.Template,
+			action.PreviousTemplate,
+		}
+		local hasExpectedName = false
+
+		for _, expected in ipairs(expectedNames) do
+			local normalizedExpected = normalizedName(expected)
+
+			if normalizedExpected ~= "" then
+				hasExpectedName = true
+
+				if towerName == normalizedExpected
+					or templateName == normalizedExpected then
+					return true
+				end
+			end
+		end
+
+		return not hasExpectedName
+	end
+
+	local function getTowerLevel(tower)
+		local config = tower and tower:FindFirstChild("Config")
+		return tonumber(readValue(config, "Level")) or 1
+	end
+
+	local function clearTowerBinding(unitId)
+		unitId = tonumber(unitId)
+
+		if not unitId then
+			return
+		end
+
+		local tower = towerRegistry[unitId]
+		towerRegistry[unitId] = nil
+
+		if tower and towerUnitIds[tower] == unitId then
+			towerUnitIds[tower] = nil
+		end
+	end
+
+	local function bindTower(unitId, tower)
+		unitId = tonumber(unitId)
+
+		if not unitId or not tower or not tower:IsA("Model") then
+			return tower
+		end
+
+		local previousTower = towerRegistry[unitId]
+
+		if previousTower and previousTower ~= tower
+			and towerUnitIds[previousTower] == unitId then
+			towerUnitIds[previousTower] = nil
+		end
+
+		local previousUnitId = towerUnitIds[tower]
+
+		if previousUnitId and previousUnitId ~= unitId then
+			towerRegistry[previousUnitId] = nil
+		end
+
+		towerRegistry[unitId] = tower
+		towerUnitIds[tower] = unitId
+		return tower
+	end
+
+	local function getRegisteredTower(unitId)
+		unitId = tonumber(unitId)
+
+		if not unitId then
+			return nil
+		end
+
+		local tower = towerRegistry[unitId]
+
+		if tower
+			and tower.Parent
+			and tower:IsA("Model")
+			and isOurTower(tower) then
+			return tower
+		end
+
+		clearTowerBinding(unitId)
+		return nil
+	end
+
+	local function captureTowerSet()
+		local result = {}
+		local towers = workspace:FindFirstChild("Towers")
+
+		if towers then
+			for _, tower in ipairs(towers:GetChildren()) do
+				if tower:IsA("Model") then
+					result[tower] = true
+				end
+			end
+		end
+
+		return result
+	end
+
+	local function levelIsAllowed(tower, allowedLevels)
+		if allowedLevels == nil then
+			return true
+		end
+
+		local currentLevel = getTowerLevel(tower)
+
+		if typeof(allowedLevels) == "number" then
+			return currentLevel == allowedLevels
+		end
+
+		if typeof(allowedLevels) == "table" then
+			for _, level in ipairs(allowedLevels) do
+				if currentLevel == tonumber(level) then
+					return true
+				end
+			end
+		end
+
+		return false
+	end
+
+	local function findFallbackTower(action, allowedLevels)
 		local towers = workspace:FindFirstChild("Towers")
 		local position = actionPosition(action)
 		local unitId = tonumber(action.UnitId)
-
-		if unitId then
-			local registered = towerRegistry[unitId]
-
-			if registered
-				and registered.Parent
-				and isOurTower(registered) then
-				return registered
-			end
-		end
 
 		if not towers or not position then
 			return nil
@@ -2043,54 +2235,112 @@ local function startHamsterStrategyPlayer()
 		local closestDistance = POSITION_TOLERANCE
 
 		for _, tower in ipairs(towers:GetChildren()) do
-			if tower:IsA("Model") and isOurTower(tower) then
-				local root = getTowerRoot(tower)
+			if tower:IsA("Model")
+				and isOurTower(tower)
+				and towerMatchesAction(tower, action)
+				and levelIsAllowed(tower, allowedLevels) then
+				local boundId = towerUnitIds[tower]
 
-				if root then
-					local distance =
-						(root.Position - position).Magnitude
+				if not boundId or boundId == unitId then
+					local root = getTowerRoot(tower)
 
-					if distance <= closestDistance then
-						closest = tower
-						closestDistance = distance
+					if root then
+						local distance =
+							(root.Position - position).Magnitude
+
+						if distance <= closestDistance then
+							closest = tower
+							closestDistance = distance
+						end
 					end
 				end
 			end
 		end
 
 		if closest and unitId then
-			towerRegistry[unitId] = closest
+			bindTower(unitId, closest)
 		end
 
 		return closest
 	end
 
-	local function towerMatchesAction(tower, action)
-		if not tower then
-			return false
+	local function findTower(action, allowedLevels)
+		local registered = getRegisteredTower(action.UnitId)
+
+		if registered then
+			return registered
 		end
 
-		local config = tower:FindFirstChild("Config")
-		local towerName = tostring(
-			readValue(config, "TowerName")
-				or tower.Name
-		)
+		return findFallbackTower(action, allowedLevels)
+	end
 
-		local expectedUnit = tostring(
-			action.PreviousUnit or action.Unit or ""
-		)
+	local function waitForTowerResult(
+		action,
+		baseline,
+		returnedValue,
+		expectedLevel,
+		allowExistingTower,
+		timeout
+	)
+		local towers = workspace:FindFirstChild("Towers")
 
-		local expectedTemplate =
-			tostring(
-				action.PreviousTemplate
-					or action.Template
-					or ""
-			)
+		if not towers then
+			return nil
+		end
 
-		return string.lower(towerName)
-				== string.lower(expectedUnit)
-			or string.lower(tower.Name)
-				== string.lower(expectedTemplate)
+		local returnedTower = typeof(returnedValue) == "Instance"
+			and returnedValue:IsA("Model")
+			and returnedValue
+			or nil
+		local expectedPosition = actionPosition(action)
+		local unitId = tonumber(action.UnitId)
+		local deadline = os.clock() + (timeout or SPAWN_CONFIRM_TIMEOUT)
+
+		repeat
+			local candidates = {}
+
+			if returnedTower and returnedTower.Parent then
+				table.insert(candidates, returnedTower)
+			end
+
+			for _, tower in ipairs(towers:GetChildren()) do
+				if tower:IsA("Model") and tower ~= returnedTower then
+					table.insert(candidates, tower)
+				end
+			end
+
+			for _, tower in ipairs(candidates) do
+				local isNewTower = not baseline[tower]
+				local isAllowedExisting =
+					allowExistingTower ~= nil
+					and tower == allowExistingTower
+
+				if (isNewTower or isAllowedExisting)
+					and tower.Parent
+					and isOurTower(tower)
+					and towerMatchesAction(tower, action)
+					and getTowerLevel(tower) == expectedLevel then
+					local boundId = towerUnitIds[tower]
+					local root = getTowerRoot(tower)
+					local closeEnough = root ~= nil
+
+					if root and expectedPosition then
+						closeEnough =
+							(root.Position - expectedPosition).Magnitude
+							<= POSITION_TOLERANCE
+					end
+
+					if closeEnough
+						and (not boundId or boundId == unitId) then
+						return bindTower(unitId, tower)
+					end
+				end
+			end
+
+			task.wait(0.05)
+		until os.clock() >= deadline or not isGameActive()
+
+		return nil
 	end
 
 	local function waitForGold(requiredAmount)
@@ -2146,33 +2396,19 @@ local function startHamsterStrategyPlayer()
 			return false, "Матч закончился раньше нужной волны."
 		end
 
-		if expectedWave > 0
-			and currentWave() > expectedWave then
-			return false,
-				"Рассинхронизация: ожидалась волна "
-					.. tostring(expectedWave)
-					.. ", сейчас "
-					.. tostring(currentWave())
-					.. "."
-		end
-
 		return true
 	end
 
 	local function playPlace(action)
-		local existing = findTower(action)
+		local unitId = tonumber(action.UnitId)
 
-		if existing then
-			if towerMatchesAction(existing, action) then
-				if action.UnitId then
-					towerRegistry[tonumber(action.UnitId)] =
-						existing
-				end
-				return true
-			end
+		if not unitId then
+			return false, "В Place отсутствует UnitId."
+		end
 
+		if getRegisteredTower(unitId) then
 			return false,
-				"На координатах Place уже стоит другой юнит."
+				"UnitId #" .. tostring(unitId) .. " уже привязан."
 		end
 
 		if not waitForGold(action.Price) then
@@ -2186,7 +2422,22 @@ local function startHamsterStrategyPlayer()
 			return false, "В Place отсутствуют CFrame или имя."
 		end
 
+		local baseline = captureTowerSet()
+
 		for attempt = 1, MAX_RETRIES do
+			local delayedTower = waitForTowerResult(
+				action,
+				baseline,
+				nil,
+				1,
+				nil,
+				0.05
+			)
+
+			if delayedTower then
+				return true
+			end
+
 			local success, result = pcall(function()
 				return SpawnTower:InvokeServer(
 					towerName,
@@ -2194,17 +2445,17 @@ local function startHamsterStrategyPlayer()
 				)
 			end)
 
-			if success and result then
-				task.wait(0.1)
+			if success then
+				local placed = waitForTowerResult(
+					action,
+					baseline,
+					result,
+					1,
+					nil,
+					SPAWN_CONFIRM_TIMEOUT
+				)
 
-				local placed = findTower(action)
-
-				if placed
-					and towerMatchesAction(placed, action) then
-					if action.UnitId then
-						towerRegistry[tonumber(action.UnitId)] =
-							placed
-					end
+				if placed then
 					return true
 				end
 			end
@@ -2217,34 +2468,41 @@ local function startHamsterStrategyPlayer()
 		end
 
 		return false,
-			"Place не был принят после повторных попыток."
+			"Place не создал новую модель для UnitId #"
+				.. tostring(unitId)
 	end
 
 	local function playUpgrade(action)
 		local targetLevel = tonumber(action.Level) or 2
+		local baseline = captureTowerSet()
 
 		for attempt = 1, MAX_RETRIES do
-			local tower = findTower(action)
+			local tower = findTower(
+				action,
+				{targetLevel, targetLevel - 1}
+			)
 
 			if not tower then
 				task.wait(RETRY_DELAY)
 			else
 				if not towerMatchesAction(tower, action) then
 					return false,
-						"На координатах Upgrade найден другой юнит."
+						"Привязанный Upgrade-юнит имеет другое имя."
 				end
 
 				local config = tower:FindFirstChild("Config")
-				local currentLevel =
-					tonumber(readValue(config, "Level")) or 1
+				local currentLevel = getTowerLevel(tower)
 
 				if currentLevel >= targetLevel then
+					bindTower(action.UnitId, tower)
 					return true
 				end
 
 				if currentLevel ~= targetLevel - 1 then
 					return false,
-						"Уровень юнита не совпадает перед Upgrade."
+						"Уровень UnitId #"
+							.. tostring(action.UnitId)
+							.. " не совпадает перед Upgrade."
 				end
 
 				local upgrade =
@@ -2271,26 +2529,17 @@ local function startHamsterStrategyPlayer()
 						)
 					end)
 
-					if success and result then
-						task.wait(0.12)
+					if success then
+						local upgraded = waitForTowerResult(
+							action,
+							baseline,
+							result,
+							targetLevel,
+							tower,
+							SPAWN_CONFIRM_TIMEOUT
+						)
 
-						local upgraded = findTower(action)
-						local upgradedConfig = upgraded
-							and upgraded:FindFirstChild("Config")
-
-						local upgradedLevel = tonumber(
-							readValue(
-								upgradedConfig,
-								"Level"
-							)
-						) or 1
-
-						if upgradedLevel >= targetLevel then
-							if action.UnitId then
-								towerRegistry[
-									tonumber(action.UnitId)
-								] = upgraded
-							end
+						if upgraded then
 							return true
 						end
 					end
@@ -2305,58 +2554,56 @@ local function startHamsterStrategyPlayer()
 		end
 
 		return false,
-			"Upgrade не был принят или юнит потерян."
+			"Upgrade не был принят или UnitId потерян."
 	end
 
 	local function playSell(action)
 		for attempt = 1, MAX_RETRIES do
-			local tower = findTower(action)
+			local unitId = tonumber(action.UnitId)
+			local wasBound = unitId and towerRegistry[unitId] ~= nil
+			local tower = findTower(action, action.Level)
 
 			if not tower then
-				if action.UnitId then
-					towerRegistry[tonumber(action.UnitId)] = nil
-				end
-				return true
-			end
-
-			if not towerMatchesAction(tower, action) then
-				return false,
-					"На координатах Sell найден другой юнит."
-			end
-
-			local sellConfig = tower:FindFirstChild("Config")
-			local sellLevel =
-				tonumber(readValue(sellConfig, "Level")) or 1
-
-			if action.Level
-				and sellLevel ~= tonumber(action.Level) then
-				return false,
-					"Уровень юнита не совпадает перед Sell."
-			end
-
-			local success, result = pcall(function()
-				return SellTower:InvokeServer(tower)
-			end)
-
-			if success and result then
-				local started = os.clock()
-
-				while tower.Parent
-					and os.clock() - started < 2 do
-					task.wait(0.05)
-				end
-
-				if not tower.Parent then
-					if action.UnitId then
-						towerRegistry[
-							tonumber(action.UnitId)
-						] = nil
-					end
+				if wasBound then
+					clearTowerBinding(unitId)
 					return true
 				end
-			end
 
-			task.wait(RETRY_DELAY)
+				task.wait(RETRY_DELAY)
+			else
+				if not towerMatchesAction(tower, action) then
+					return false,
+						"Привязанный Sell-юнит имеет другое имя."
+				end
+
+				local sellLevel = getTowerLevel(tower)
+
+				if action.Level
+					and sellLevel ~= tonumber(action.Level) then
+					return false,
+						"Уровень юнита не совпадает перед Sell."
+				end
+
+				local success, result = pcall(function()
+					return SellTower:InvokeServer(tower)
+				end)
+
+				if success and result then
+					local started = os.clock()
+
+					while tower.Parent
+						and os.clock() - started < 2 do
+						task.wait(0.05)
+					end
+
+					if not tower.Parent then
+						clearTowerBinding(unitId)
+						return true
+					end
+				end
+
+				task.wait(RETRY_DELAY)
+			end
 		end
 
 		return false, "Sell не был принят сервером."
@@ -2370,14 +2617,14 @@ local function startHamsterStrategyPlayer()
 		end
 
 		for attempt = 1, MAX_RETRIES do
-			local tower = findTower(action)
+			local tower = findTower(action, action.Level)
 
 			if not tower then
 				task.wait(RETRY_DELAY)
 			else
 				if not towerMatchesAction(tower, action) then
 					return false,
-						"На координатах Target найден другой юнит."
+						"Привязанный Target-юнит имеет другое имя."
 				end
 
 				local config = tower:FindFirstChild("Config")
@@ -2432,6 +2679,12 @@ local function startHamsterStrategyPlayer()
 	local function playSkip(action)
 		if not VoteSkip or not VoteSkip:IsA("RemoteEvent") then
 			return false, "RemoteEvent VoteSkip не найден."
+		end
+
+		local expectedWave = tonumber(action.Wave) or 0
+
+		if expectedWave > 0 and currentWave() > expectedWave then
+			return true
 		end
 
 		local startingWave = currentWave()
@@ -2549,6 +2802,9 @@ local function startHamsterStrategyPlayer()
 	end
 
 	local function runStrategy()
+		table.clear(towerRegistry)
+		table.clear(towerUnitIds)
+
 		local compatible, compatibilityError =
 			checkCompatibility()
 
@@ -2656,12 +2912,14 @@ local function serializeStrategy()
 	local info = workspace:FindFirstChild("Info")
 	local mapName = tostring(getValue(info, "Map") or "Unknown")
 	local modeName = tostring(getValue(info, "Mode") or "Unknown")
-	local difficultyName = tostring(
-		getValue(info, "Difficulty")
-			or getValue(info, "DifficultyName")
-			or getValue(info, "DifficultyMode")
-			or "Unknown"
-	)
+	local rawDifficulty = getValue(info, "Difficulty")
+		or getValue(info, "DifficultyName")
+		or getValue(info, "DifficultyMode")
+	local difficultyName = tostring(rawDifficulty or "Any")
+
+	if difficultyName == "" or difficultyName == "Unknown" then
+		difficultyName = "Any"
+	end
 	local duration = recordingStartedAt > 0
 		and math.max(0, os.clock() - recordingStartedAt)
 		or 0
@@ -2692,6 +2950,8 @@ local function serializeStrategy()
 		"\tDifficulty = "
 			.. string.format("%q", difficultyName)
 			.. ",",
+		"\tStrictUnitBinding = true,",
+		"\tActionCount = " .. tostring(#recordedActions) .. ",",
 		"\tAutoReplay = "
 			.. tostring(autoReplayEnabled)
 			.. ",",
@@ -2715,7 +2975,7 @@ local function serializeStrategy()
 		"\t\tVersion = "
 			.. string.format(
 				"%q",
-				"3.0"
+				"4.0"
 			)
 			.. ",",
 		"\t\tFormatVersion = "
@@ -2730,6 +2990,8 @@ local function serializeStrategy()
 		"\t\tDifficulty = "
 			.. string.format("%q", difficultyName)
 			.. ",",
+		"\t\tUnitBinding = \"SpawnedInstanceByUnitId\",",
+		"\t\tActionCount = " .. tostring(#recordedActions) .. ",",
 		"\t\tDeck = {",
 	}
 
@@ -2741,20 +3003,6 @@ local function serializeStrategy()
 	end
 
 	table.insert(lines, "\t\t},")
-	table.insert(lines, "\t},")
-	table.insert(lines, "\tGroups = {")
-
-	for _, groupName in ipairs(ACTION_GROUP_ORDER) do
-		table.insert(
-			lines,
-			"\t\t["
-				.. string.format("%q", groupName)
-				.. "] = "
-				.. tostring(enabledActionGroups[groupName] ~= false)
-				.. ","
-		)
-	end
-
 	table.insert(lines, "\t},")
 	table.insert(lines, "\tDeck = {")
 
@@ -2780,11 +3028,6 @@ local function serializeStrategy()
 			"Type = " .. string.format("%q", action.Type),
 			"Time = " .. string.format("%.3f", action.Time),
 			"Wave = " .. tostring(action.Wave),
-			"Group = "
-				.. string.format(
-					"%q",
-					tostring(action.Group or "Early Game")
-				),
 		}
 
 		if action.UnitId then
@@ -3133,19 +3376,22 @@ end
 
 local function appendPlaceAction(snapshot)
 	local elapsed = roundNumber(
-		os.clock() - recordingStartedAt,
+		(snapshot.CapturedAt or os.clock()) - recordingStartedAt,
 		3
 	)
+	local timing = snapshot.Timing ~= ""
+		and snapshot.Timing
+		or getCurrentTiming(elapsed)
 
 	local action = {
 		Type = "Place",
 		UnitId = snapshot.UnitId,
 		Time = elapsed,
-		Wave = getCurrentWave(),
+		Wave = snapshot.Wave or getCurrentWave(),
 		Unit = snapshot.Name,
 		Template = snapshot.Template,
 		Price = snapshot.Price,
-		Timing = getCurrentTiming(elapsed),
+		Timing = timing,
 		Position = {
 			X = roundNumber(snapshot.Position.X, 3),
 			Y = roundNumber(snapshot.Position.Y, 3),
@@ -3173,16 +3419,19 @@ local function appendUpgradeAction(snapshot, previousSnapshot)
 		or 0
 
 	local elapsed = roundNumber(
-		os.clock() - recordingStartedAt,
+		(snapshot.CapturedAt or os.clock()) - recordingStartedAt,
 		3
 	)
+	local timing = snapshot.Timing ~= ""
+		and snapshot.Timing
+		or getCurrentTiming(elapsed)
 
 	local action = {
 		Type = "Upgrade",
 		UnitId = snapshot.UnitId
 			or (previousSnapshot and previousSnapshot.UnitId),
 		Time = elapsed,
-		Wave = getCurrentWave(),
+		Wave = snapshot.Wave or getCurrentWave(),
 		Unit = snapshot.Name,
 		PreviousUnit = previousSnapshot
 			and previousSnapshot.Name
@@ -3190,7 +3439,7 @@ local function appendUpgradeAction(snapshot, previousSnapshot)
 		PreviousTemplate = previousSnapshot
 			and previousSnapshot.Template
 			or nil,
-		Timing = getCurrentTiming(elapsed),
+		Timing = timing,
 		Position = {
 			X = roundNumber(snapshot.Position.X, 3),
 			Y = roundNumber(snapshot.Position.Y, 3),
@@ -3406,55 +3655,44 @@ connectTowerTargetRecorder = function(tower)
 end
 
 local function findUpgradeSource(newSnapshot)
-	local bestModel = nil
-	local bestSnapshot = nil
-	local bestDistance = TOWER_MATCH_DISTANCE
+	local deadline = os.clock() + 0.2
 
-	for tower, snapshot in pairs(knownTowerSnapshots) do
-		if tower ~= newSnapshot.Model then
-			local distance = (
-				snapshot.Position - newSnapshot.Position
-			).Magnitude
+	repeat
+		local bestIndex = nil
+		local bestSnapshot = nil
+		local bestDistance = TOWER_MATCH_DISTANCE
 
-			if distance <= bestDistance
-				and isUpgradeMatch(snapshot, newSnapshot) then
-				bestDistance = distance
-				bestModel = tower
-				bestSnapshot = snapshot
-			end
-		end
-	end
+		for index = #recentRemovedTowers, 1, -1 do
+			local removed = recentRemovedTowers[index]
+			local age = os.clock() - removed.RemovedAt
 
-	if bestSnapshot then
-		consumedUpgradeSources[bestModel] = true
-		knownTowerSnapshots[bestModel] = nil
-		return bestSnapshot
-	end
-
-	local now = os.clock()
-
-	for index = #recentRemovedTowers, 1, -1 do
-		local removed = recentRemovedTowers[index]
-		local age = now - removed.RemovedAt
-
-		if age > UPGRADE_MATCH_WINDOW then
-			table.remove(recentRemovedTowers, index)
-		else
-			local distance = (
-				removed.Snapshot.Position
-					- newSnapshot.Position
-			).Magnitude
-
-			if distance <= TOWER_MATCH_DISTANCE
-				and isUpgradeMatch(
-					removed.Snapshot,
-					newSnapshot
-				) then
+			if age > UPGRADE_MATCH_WINDOW then
 				table.remove(recentRemovedTowers, index)
-				return removed.Snapshot
+			else
+				local distance = (
+					removed.Snapshot.Position
+						- newSnapshot.Position
+				).Magnitude
+
+				if distance <= bestDistance
+					and isUpgradeMatch(
+						removed.Snapshot,
+						newSnapshot
+					) then
+					bestIndex = index
+					bestSnapshot = removed.Snapshot
+					bestDistance = distance
+				end
 			end
 		end
-	end
+
+		if bestIndex then
+			table.remove(recentRemovedTowers, bestIndex)
+			return bestSnapshot
+		end
+
+		task.wait(0.03)
+	until os.clock() >= deadline
 
 	return nil
 end
@@ -3545,13 +3783,14 @@ local function connectTowerRecorder()
 
 	towersFolder.ChildAdded:Connect(function(tower)
 		task.delay(0.12, function()
-			local snapshot = getTowerSnapshot(tower)
+			local snapshot = getTowerSnapshot(tower, true)
 
 			if not snapshot then
 				return
 			end
 
 			if not recording then
+				snapshot.UnitId = getOrAssignTowerId(tower)
 				knownTowerSnapshots[tower] = snapshot
 				return
 			end
@@ -3562,6 +3801,8 @@ local function connectTowerRecorder()
 			if previousSnapshot and previousSnapshot.UnitId then
 				towerIds[tower] = previousSnapshot.UnitId
 				snapshot.UnitId = previousSnapshot.UnitId
+			else
+				snapshot.UnitId = getOrAssignTowerId(tower)
 			end
 
 			knownTowerSnapshots[tower] = snapshot
@@ -4217,67 +4458,12 @@ local function initializeLinoriaUi()
 			Tooltip = "Скопировать аварийную запись в Strat.txt",
 		})
 
-		local groupRecorder =
-			tabs.Recorder:AddRightGroupbox("Action Groups")
-
-		groupRecorder:AddDropdown("HH_CurrentActionGroup", {
-			Values = ACTION_GROUP_ORDER,
-			Default = currentActionGroup,
-			Multi = false,
-			Text = "Группа новых действий",
-			Tooltip =
-				"Все следующие действия получат выбранную группу",
-			Callback = function(value)
-				local selectedGroup = tostring(value)
-
-				if not table.find(
-					ACTION_GROUP_ORDER,
-					selectedGroup
-				) then
-					return
-				end
-
-				currentActionGroup = selectedGroup
-				profileSnapshot.Settings.CurrentActionGroup =
-					currentActionGroup
-				updateRecorderStatus()
-				saveSnapshot()
-			end,
-		})
-
-		for _, groupName in ipairs(ACTION_GROUP_ORDER) do
-			local capturedGroupName = groupName
-			local toggleId = "HH_Group_"
-				.. string.gsub(groupName, "%s+", "")
-
-			groupRecorder:AddToggle(toggleId, {
-				Text = "Воспроизводить " .. groupName,
-				Default = enabledActionGroups[groupName] ~= false,
-				Callback = function(value)
-					enabledActionGroups[capturedGroupName] =
-						value == true
-					profileSnapshot.Settings.EnabledGroups[
-						capturedGroupName
-					] = value == true
-					saveSnapshot()
-
-					if saveAutosave and recording then
-						task.defer(saveAutosave)
-					end
-				end,
-			})
-		end
-
 		local playerStatus =
 			tabs.Player:AddLeftGroupbox("Next Action Overlay")
 
 		playerStatus:AddLabel(
 			"Во время Replay сверху экрана показывается следующее "
 				.. "действие, ID юнита и обратный отсчёт.",
-			true
-		)
-		playerStatus:AddLabel(
-			"Отключённые Action Groups автоматически пропускаются.",
 			true
 		)
 
@@ -4310,7 +4496,7 @@ local function initializeLinoriaUi()
 						getValue(info, "Difficulty")
 							or getValue(info, "DifficultyName")
 							or getValue(info, "DifficultyMode")
-							or "Unknown"
+							or "Any"
 					),
 				true
 			)
