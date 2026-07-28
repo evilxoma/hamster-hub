@@ -16,15 +16,10 @@ local ENTER_TIMEOUT = 4
 local TELEPORT_HEIGHT = 3.5
 local VOTE_CONFIRMATION_TIMEOUT = 5
 
-local SNAPSHOT_KEY = "HamsterHub_ProfileSnapshot_V4"
+local SNAPSHOT_KEY = "HamsterHub_ProfileSnapshot_V5"
 local STRATEGY_FILE_NAME = "Strat.txt"
 local AUTOSAVE_FILE_NAME = "Strat_Autosave.txt"
-local STRATEGY_FORMAT_VERSION = 4
-
--- Roblox Studio local auto-start.
--- Add a child ModuleScript named "Strat" under this LocalScript.
-local AUTO_START_LOCAL_STRATEGY = true
-local LOCAL_STRATEGY_MODULE_NAME = "Strat"
+local STRATEGY_FORMAT_VERSION = 5
 local LINORIA_REPOSITORY =
 	"https://raw.githubusercontent.com/violin-suzutsuki/LinoriaLib/main/"
 local TOWER_MATCH_DISTANCE = 1.25
@@ -1547,7 +1542,12 @@ local function startHamsterStrategyPlayer()
 		return tostring(action.Type or "Action") .. suffix
 	end
 
-	local function updateNextAction(action, actionIndex, remaining)
+	local function updateNextAction(
+		action,
+		actionIndex,
+		remaining,
+		statusText
+	)
 		if not action then
 			overlayLabel.Text = "Strategy Player: действий больше нет."
 			return
@@ -1561,14 +1561,20 @@ local function startHamsterStrategyPlayer()
 				math.max(0, tonumber(remaining) or 0)
 			)
 		else
-			prefix = "Выполняю: "
+			prefix = "Готовлю: "
 		end
 
-		overlayLabel.Text = prefix
+		local text = prefix
 			.. describeAction(action)
 			.. "  [#"
 			.. tostring(actionIndex)
 			.. "]"
+
+		if statusText and tostring(statusText) ~= "" then
+			text = text .. " • " .. tostring(statusText)
+		end
+
+		overlayLabel.Text = text
 	end
 
 	local function isActionGroupEnabled(action)
@@ -1662,35 +1668,55 @@ local function startHamsterStrategyPlayer()
 			)
 		end
 
-		local candidates = {}
+		local desiredMap = tostring(STRATEGY.Map or "")
+		local searchStartedAt = os.clock()
+		local selected = nil
 
-		for _, elevator in ipairs(elevators:GetChildren()) do
-			local floor = elevator:IsA("Model")
-				and floorPart(elevator)
-				or nil
+		repeat
+			local candidates = {}
 
-			if floor
-				and mapName(elevator) == STRATEGY.Map
-				and playerCount(elevator) < 2 then
-				table.insert(candidates, {
-					Elevator = elevator,
-					Floor = floor,
-					Players = playerCount(elevator),
-				})
+			for _, elevator in ipairs(elevators:GetChildren()) do
+				local floor = elevator:IsA("Model")
+					and floorPart(elevator)
+					or nil
+
+				local elevatorMap = tostring(
+					mapName(elevator) or ""
+				)
+
+				if floor
+					and string.lower(elevatorMap)
+						== string.lower(desiredMap)
+					and playerCount(elevator) < 2 then
+					table.insert(candidates, {
+						Elevator = elevator,
+						Floor = floor,
+						Players = playerCount(elevator),
+					})
+				end
 			end
-		end
 
-		table.sort(candidates, function(a, b)
-			return a.Players < b.Players
-		end)
+			table.sort(candidates, function(a, b)
+				return a.Players < b.Players
+			end)
 
-		local selected = candidates[1]
+			selected = candidates[1]
+
+			if not selected then
+				log(
+					"Жду свободный лифт карты "
+						.. desiredMap
+						.. "..."
+				)
+				task.wait(1)
+			end
+		until selected or os.clock() - searchStartedAt >= 90
 
 		if not selected then
 			return false,
 				"Свободный лифт карты "
-					.. tostring(STRATEGY.Map)
-					.. " не найден."
+					.. desiredMap
+					.. " не найден за 90 секунд."
 		end
 
 		local character =
@@ -1734,6 +1760,53 @@ local function startHamsterStrategyPlayer()
 			task.wait(0.1)
 		end
 
+		local desiredDifficulty = tostring(
+			STRATEGY.Difficulty or ""
+		)
+
+		if STRATEGY.AutoSelectDifficulty ~= false
+			and desiredDifficulty ~= ""
+			and desiredDifficulty ~= "Unknown"
+			and desiredDifficulty ~= "Any" then
+			local difficultyRemote = nil
+
+			for _, remoteName in ipairs({
+				"VoteForDifficulty",
+				"VoteDifficulty",
+				"SelectDifficulty",
+				"SetDifficulty",
+				"DifficultyVote",
+			}) do
+				local candidate = lobbyEvents:FindFirstChild(
+					remoteName,
+					true
+				)
+
+				if candidate
+					and (candidate:IsA("RemoteEvent")
+						or candidate:IsA("RemoteFunction")) then
+					difficultyRemote = candidate
+					break
+				end
+			end
+
+			if difficultyRemote then
+				pcall(function()
+					if difficultyRemote:IsA("RemoteEvent") then
+						difficultyRemote:FireServer(
+							desiredDifficulty
+						)
+					else
+						difficultyRemote:InvokeServer(
+							desiredDifficulty
+						)
+					end
+				end)
+
+				task.wait(0.2)
+			end
+		end
+
 		startElevator:FireServer(elevatorId)
 
 		log(
@@ -1748,6 +1821,12 @@ local function startHamsterStrategyPlayer()
 	if STRATEGY.PlaceId
 		and STRATEGY.PlaceId ~= 0
 		and game.PlaceId ~= STRATEGY.PlaceId then
+		if STRATEGY.AutoEnterMatch == false then
+			fail("Автовход на карту отключён в стратегии.")
+			environment.HamsterStrategyPlayerRunning = false
+			return
+		end
+
 		local success, lobbyError = runLobbyAutomation()
 
 		if not success then
@@ -1794,7 +1873,7 @@ local function startHamsterStrategyPlayer()
 	local RETRY_DELAY = 0.35
 	local POSITION_TOLERANCE = 1.5
 	local SPAWN_CONFIRM_TIMEOUT = 3.5
-	local SUPPORTED_FORMAT_VERSION = 4
+	local SUPPORTED_FORMAT_VERSION = 5
 	local towerRegistry = {}
 	local towerUnitIds = {}
 
@@ -1817,27 +1896,123 @@ local function startHamsterStrategyPlayer()
 		return tonumber(readValue(info, "Wave")) or 0
 	end
 
-	local function startModeVoting()
-		local voteForMap = events:FindFirstChild("VoteForMap")
+	local function normalizedChoice(value)
+		local textValue = tostring(value or "")
 
-		if not voteForMap
-			or not voteForMap:IsA("RemoteEvent")
-			or not STRATEGY.Mode
-			or STRATEGY.Mode == "Unknown" then
+		if textValue == ""
+			or textValue == "Unknown"
+			or textValue == "Any" then
+			return nil
+		end
+
+		return textValue
+	end
+
+	local function findSelectionRemote(names)
+		for _, remoteName in ipairs(names) do
+			local remote = events:FindFirstChild(remoteName, true)
+
+			if remote
+				and (remote:IsA("RemoteEvent")
+					or remote:IsA("RemoteFunction")) then
+				return remote
+			end
+		end
+
+		return nil
+	end
+
+	local function sendSelection(remote, value)
+		if not remote or not value then
+			return false
+		end
+
+		local success = pcall(function()
+			if remote:IsA("RemoteEvent") then
+				remote:FireServer(value)
+			else
+				remote:InvokeServer(value)
+			end
+		end)
+
+		return success
+	end
+
+	local function startMatchSelection()
+		local desiredMode = normalizedChoice(STRATEGY.Mode)
+		local desiredDifficulty = nil
+
+		if STRATEGY.AutoSelectDifficulty ~= false then
+			desiredDifficulty = normalizedChoice(
+				STRATEGY.Difficulty
+			)
+		end
+
+		local modeRemote = findSelectionRemote({
+			"VoteForMap",
+			"VoteForMode",
+			"SelectMode",
+			"SetMode",
+		})
+
+		local difficultyRemote = findSelectionRemote({
+			"VoteForDifficulty",
+			"VoteDifficulty",
+			"SelectDifficulty",
+			"SetDifficulty",
+			"DifficultyVote",
+		})
+
+		if not desiredMode and not desiredDifficulty then
 			return
 		end
 
 		task.spawn(function()
-			local lastVoteAt = 0
+			local lastModeVoteAt = 0
+			local lastDifficultyVoteAt = 0
+			local missingDifficultyWarned = false
 
 			while info.Parent and not isGameActive() do
-				if readValue(info, "Voting") == true
-					and os.clock() - lastVoteAt >= 1 then
-					lastVoteAt = os.clock()
+				local voting = readValue(info, "Voting") == true
 
-					pcall(function()
-						voteForMap:FireServer(STRATEGY.Mode)
-					end)
+				if voting then
+					local currentMode = tostring(
+						readValue(info, "Mode") or ""
+					)
+
+					local currentDifficulty = tostring(
+						readValue(info, "Difficulty")
+							or readValue(info, "DifficultyName")
+							or readValue(info, "DifficultyMode")
+							or ""
+					)
+
+					if desiredMode
+						and currentMode ~= desiredMode
+						and os.clock() - lastModeVoteAt >= 1 then
+						lastModeVoteAt = os.clock()
+						sendSelection(modeRemote, desiredMode)
+					end
+
+					if desiredDifficulty
+						and currentDifficulty ~= desiredDifficulty
+						and os.clock() - lastDifficultyVoteAt >= 1 then
+						lastDifficultyVoteAt = os.clock()
+
+						if difficultyRemote then
+							sendSelection(
+								difficultyRemote,
+								desiredDifficulty
+							)
+						elseif not missingDifficultyWarned then
+							missingDifficultyWarned = true
+							fail(
+								"Remote выбора сложности не найден. "
+									.. "Добавь VoteForDifficulty, "
+									.. "SelectDifficulty или SetDifficulty."
+							)
+						end
+					end
 				end
 
 				task.wait(0.2)
@@ -2348,6 +2523,102 @@ local function startHamsterStrategyPlayer()
 		return nil
 	end
 
+	local function parseAmount(value)
+		if typeof(value) == "number" then
+			return value
+		end
+
+		local textValue = tostring(value or "")
+			:gsub("%s", "")
+			:gsub(",", "")
+
+		local suffix = string.upper(
+			string.match(textValue, "([KMBT])$") or ""
+		)
+
+		local numberValue = tonumber(
+			string.match(textValue, "[-+]?[%d%.]+") or ""
+		)
+
+		if not numberValue then
+			return nil
+		end
+
+		local multipliers = {
+			K = 1e3,
+			M = 1e6,
+			B = 1e9,
+			T = 1e12,
+		}
+
+		return numberValue * (multipliers[suffix] or 1)
+	end
+
+	local function currentGoldAmount()
+		local locations = {
+			player,
+			player:FindFirstChild("leaderstats"),
+			player:FindFirstChild("Stats"),
+			player:FindFirstChild("Data"),
+		}
+
+		for _, location in ipairs(locations) do
+			if location then
+				for _, valueName in ipairs({
+					"Gold",
+					"Cash",
+					"Money",
+				}) do
+					local valueObject = location:FindFirstChild(valueName)
+
+					if valueObject and valueObject:IsA("ValueBase") then
+						local amount = parseAmount(valueObject.Value)
+
+						if amount then
+							return amount
+						end
+					end
+				end
+			end
+		end
+
+		local gameGui = player.PlayerGui:FindFirstChild("GameGui")
+
+		if gameGui then
+			for _, descendant in ipairs(gameGui:GetDescendants()) do
+				if descendant:IsA("TextLabel")
+					or descendant:IsA("TextButton") then
+					local lowerName = string.lower(descendant.Name)
+
+					if string.find(lowerName, "gold")
+						or string.find(lowerName, "cash")
+						or string.find(lowerName, "money") then
+						local amount = parseAmount(descendant.Text)
+
+						if amount then
+							return amount
+						end
+					end
+				end
+			end
+		end
+
+		return 0
+	end
+
+	local function actionRequiredGold(action)
+		if STRATEGY.WaitForMoney == false then
+			return 0
+		end
+
+		if action.Type == "Place"
+			or action.Type == "Upgrade" then
+			return math.max(0, tonumber(action.Price) or 0)
+		end
+
+		return 0
+	end
+
 	local function waitForGold(requiredAmount)
 		local required = tonumber(requiredAmount) or 0
 
@@ -2355,17 +2626,12 @@ local function startHamsterStrategyPlayer()
 			return true
 		end
 
-		local gold = player:FindFirstChild("Gold")
-
 		while isGameActive() do
-			if gold
-				and tonumber(gold.Value)
-				and tonumber(gold.Value) >= required then
+			if currentGoldAmount() >= required then
 				return true
 			end
 
 			task.wait(0.1)
-			gold = gold or player:FindFirstChild("Gold")
 		end
 
 		return false
@@ -2373,35 +2639,68 @@ local function startHamsterStrategyPlayer()
 
 	local function waitForAction(action, startedAt, actionIndex)
 		local targetTime = tonumber(action.Time) or 0
+		local expectedWave = tonumber(action.Wave) or 0
+		local requiredGold = actionRequiredGold(action)
 
-		while isGameActive()
-			and os.clock() - startedAt < targetTime do
+		while isGameActive() do
+			local elapsed = os.clock() - startedAt
+			local currentWaveNumber = currentWave()
+			local currentGold = currentGoldAmount()
+
+			local timeReady = elapsed >= targetTime
+			local waveReady = expectedWave <= 0
+				or currentWaveNumber >= expectedWave
+			local moneyReady = currentGold >= requiredGold
+
+			if timeReady and waveReady and moneyReady then
+				return true
+			end
+
+			local waitingFor = {}
+
+			if not timeReady then
+				table.insert(
+					waitingFor,
+					string.format(
+						"время %.1f/%.1f",
+						elapsed,
+						targetTime
+					)
+				)
+			end
+
+			if not waveReady then
+				table.insert(
+					waitingFor,
+					"волна "
+						.. tostring(currentWaveNumber)
+						.. "/"
+						.. tostring(expectedWave)
+				)
+			end
+
+			if not moneyReady then
+				table.insert(
+					waitingFor,
+					"деньги "
+						.. tostring(math.floor(currentGold))
+						.. "/"
+						.. tostring(math.floor(requiredGold))
+				)
+			end
+
 			updateNextAction(
 				action,
 				actionIndex,
-				targetTime - (os.clock() - startedAt)
+				math.max(0, targetTime - elapsed),
+				"Жду: " .. table.concat(waitingFor, ", ")
 			)
+
 			task.wait(0.05)
 		end
 
-		if not isGameActive() then
-			return false, "Матч закончился раньше действия."
-		end
-
-		local expectedWave = tonumber(action.Wave) or 0
-
-		while isGameActive()
-			and expectedWave > 0
-			and currentWave() < expectedWave do
-			updateNextAction(action, actionIndex, 0)
-			task.wait(0.05)
-		end
-
-		if not isGameActive() then
-			return false, "Матч закончился раньше нужной волны."
-		end
-
-		return true
+		return false,
+			"Матч закончился до выполнения условий действия."
 	end
 
 	local function playPlace(action)
@@ -2888,7 +3187,7 @@ local function startHamsterStrategyPlayer()
 	end
 
 	while info.Parent do
-		startModeVoting()
+		startMatchSelection()
 
 		if not waitForActiveGame() then
 			break
@@ -2920,6 +3219,27 @@ local function serializeStrategy()
 	local rawDifficulty = getValue(info, "Difficulty")
 		or getValue(info, "DifficultyName")
 		or getValue(info, "DifficultyMode")
+
+	if rawDifficulty == nil then
+		for _, descendant in ipairs(playerGui:GetDescendants()) do
+			if descendant:IsA("TextLabel")
+				or descendant:IsA("TextButton") then
+				local lowerName = string.lower(descendant.Name)
+
+				if string.find(lowerName, "difficulty")
+					or string.find(lowerName, "selecteddifficulty") then
+					local textValue = tostring(descendant.Text or "")
+
+					if textValue ~= ""
+						and string.lower(textValue) ~= "difficulty" then
+						rawDifficulty = textValue
+						break
+					end
+				end
+			end
+		end
+	end
+
 	local difficultyName = tostring(rawDifficulty or "Any")
 
 	if difficultyName == "" or difficultyName == "Unknown" then
@@ -2955,6 +3275,10 @@ local function serializeStrategy()
 		"\tDifficulty = "
 			.. string.format("%q", difficultyName)
 			.. ",",
+		"\tAutoEnterMatch = true,",
+		"\tAutoSelectDifficulty = true,",
+		"\tWaitForMoney = true,",
+		"\tExecutionRule = \"TimeAndMoney\",",
 		"\tStrictUnitBinding = true,",
 		"\tActionCount = " .. tostring(#recordedActions) .. ",",
 		"\tAutoReplay = "
@@ -2980,7 +3304,7 @@ local function serializeStrategy()
 		"\t\tVersion = "
 			.. string.format(
 				"%q",
-				"4.0"
+				"5.0"
 			)
 			.. ",",
 		"\t\tFormatVersion = "
@@ -2995,6 +3319,8 @@ local function serializeStrategy()
 		"\t\tDifficulty = "
 			.. string.format("%q", difficultyName)
 			.. ",",
+		"\t\tExecutionRule = \"TimeAndMoney\",",
+		"\t\tAutoEnterMatch = true,",
 		"\t\tUnitBinding = \"SpawnedInstanceByUnitId\",",
 		"\t\tActionCount = " .. tostring(#recordedActions) .. ",",
 		"\t\tDeck = {",
@@ -5291,58 +5617,6 @@ local function startAutoToiletHQ()
 		task.wait(0.5)
 	end
 end
-
-local function startLocalStrategyModule()
-	if not AUTO_START_LOCAL_STRATEGY then
-		return false
-	end
-
-	local strategyModule = script:FindFirstChild(
-		LOCAL_STRATEGY_MODULE_NAME
-	)
-
-	if not strategyModule then
-		setDebug(
-			"Strategy",
-			"Добавь дочерний ModuleScript Strat для автозапуска.",
-			"waiting"
-		)
-		return false
-	end
-
-	if not strategyModule:IsA("ModuleScript") then
-		setDebug(
-			"Strategy",
-			"Объект Strat должен быть ModuleScript.",
-			"error"
-		)
-		return false
-	end
-
-	task.defer(function()
-		local loaded, result = pcall(require, strategyModule)
-
-		if not loaded then
-			setDebug(
-				"Strategy error",
-				tostring(result),
-				"error"
-			)
-			warn("[HAMSTER HUB] Не удалось запустить Strat:", result)
-			return
-		end
-
-		setDebug(
-			"Strategy",
-			"Strat загружен. Replay запущен автоматически.",
-			"success"
-		)
-	end)
-
-	return true
-end
-
-startLocalStrategyModule()
 
 task.wait(2)
 
