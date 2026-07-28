@@ -2195,6 +2195,7 @@ local function startHamsterStrategyPlayer()
 
 	local MAX_RETRIES = 20
 	local RETRY_DELAY = 0.35
+	local PLACE_ACTION_COOLDOWN = 0.1
 	local POSITION_TOLERANCE = 1.5
 	local SPAWN_CONFIRM_TIMEOUT = 3.5
 	local SUPPORTED_FORMAT_VERSION = 6
@@ -2961,22 +2962,44 @@ local function startHamsterStrategyPlayer()
 		return false
 	end
 
-	local function waitForAction(action, startedAt, actionIndex)
-		local targetTime = tonumber(action.Time) or 0
+	local function waitForAction(
+		action,
+		startedAt,
+		actionIndex,
+		lastPlaceAt
+	)
+		local isPlace = action.Type == "Place"
+		local targetTime = isPlace
+			and 0
+			or (tonumber(action.Time) or 0)
 		local expectedWave = tonumber(action.Wave) or 0
 		local requiredGold = actionRequiredGold(action)
 
 		while isGameActive() do
-			local elapsed = os.clock() - startedAt
+			local now = os.clock()
+			local elapsed = now - startedAt
 			local currentWaveNumber = currentWave()
 			local currentGold = currentGoldAmount()
+			local placeCooldownRemaining = 0
+
+			if isPlace and lastPlaceAt then
+				placeCooldownRemaining = math.max(
+					0,
+					PLACE_ACTION_COOLDOWN - (now - lastPlaceAt)
+				)
+			end
 
 			local timeReady = elapsed >= targetTime
+			local placeCooldownReady =
+				placeCooldownRemaining <= 0
 			local waveReady = expectedWave <= 0
 				or currentWaveNumber >= expectedWave
 			local moneyReady = currentGold >= requiredGold
 
-			if timeReady and waveReady and moneyReady then
+			if timeReady
+				and placeCooldownReady
+				and waveReady
+				and moneyReady then
 				return true
 			end
 
@@ -2989,6 +3012,16 @@ local function startHamsterStrategyPlayer()
 						"время %.1f/%.1f",
 						elapsed,
 						targetTime
+					)
+				)
+			end
+
+			if not placeCooldownReady then
+				table.insert(
+					waitingFor,
+					string.format(
+						"Place КД %.2f",
+						placeCooldownRemaining
 					)
 				)
 			end
@@ -3013,14 +3046,20 @@ local function startHamsterStrategyPlayer()
 				)
 			end
 
+			local remaining = isPlace
+				and placeCooldownRemaining
+				or math.max(0, targetTime - elapsed)
+
 			updateNextAction(
 				action,
 				actionIndex,
-				math.max(0, targetTime - elapsed),
-				"Жду: " .. table.concat(waitingFor, ", ")
+				remaining,
+				#waitingFor > 0
+					and ("Жду: " .. table.concat(waitingFor, ", "))
+					or nil
 			)
 
-			task.wait(0.05)
+			task.wait(0.02)
 		end
 
 		return false,
@@ -3449,6 +3488,7 @@ local function startHamsterStrategyPlayer()
 		end
 
 		local startedAt = os.clock()
+		local lastPlaceAt = nil
 
 		log(
 			"Запуск: "
@@ -3459,7 +3499,12 @@ local function startHamsterStrategyPlayer()
 		for index, action in ipairs(STRATEGY.Actions or {}) do
 			if isActionGroupEnabled(action) then
 				local timingOk, timingError =
-					waitForAction(action, startedAt, index)
+					waitForAction(
+						action,
+						startedAt,
+						index,
+						lastPlaceAt
+					)
 
 				if not timingOk then
 					fail(
@@ -3485,6 +3530,10 @@ local function startHamsterStrategyPlayer()
 							.. tostring(actionError)
 					)
 					return false
+				end
+
+				if action.Type == "Place" then
+					lastPlaceAt = os.clock()
 				end
 
 				log(
@@ -5049,7 +5098,7 @@ local function initializeLinoriaUi()
 		end)
 
 		local Window = Library:CreateWindow({
-			Title = "Hamster Hub | Recorder V6",
+			Title = "Hamster Hub | Recorder V6 • Place CD 0.1",
 			Center = true,
 			AutoShow = true,
 			TabPadding = 8,
