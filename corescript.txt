@@ -28,6 +28,7 @@ local STRATEGY_PATH = EXECUTOR_PROJECT .. "/strat.txt"
 local AUTOSAVE_PATH = EXECUTOR_PROJECT .. "/strat_autosave.txt"
 local ERROR_LOG_PATH = EXECUTOR_PROJECT .. "/Strategy_Error_Log.txt"
 local SETTINGS_PATH = EXECUTOR_PROJECT .. "/settings.json"
+local HUB_TITLE = "Hamster Hub \240\159\144\185 \240\159\148\165"
 local VIP_SERVER_URL =
 	"https://www.roblox.com/share?code=4396b9eeb786af4d9b28fc463d91a82c&type=Server"
 local VIP_SHARE_CODE = "4396b9eeb786af4d9b28fc463d91a82c"
@@ -48,8 +49,8 @@ local ACTION_GROUP_ORDER = {
 
 
 local profileSnapshot = {
-	Coins = "вЂ”",
-	Gems = "вЂ”",
+	Coins = "—",
+	Gems = "—",
 	Deck = {},
 	Settings = {
 		AutoTeleport = true,
@@ -255,6 +256,7 @@ screenGui.IgnoreGuiInset = true
 screenGui.DisplayOrder = 999
 screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 screenGui.Parent = playerGui
+screenGui.Enabled = false
 
 local container = Instance.new("Frame")
 container.Name = "Container"
@@ -335,7 +337,7 @@ local title = Instance.new("TextLabel")
 title.Position = UDim2.fromOffset(29, 0)
 title.Size = UDim2.new(1, -45, 1, 0)
 title.BackgroundTransparency = 1
-title.Text = "Hamster Hub рџђ№рџ”Ґ"
+title.Text = HUB_TITLE
 title.TextColor3 = Color3.fromRGB(245, 245, 247)
 title.TextSize = 17
 title.Font = Enum.Font.GothamBold
@@ -483,7 +485,7 @@ local function appendFailureReport(message, context)
 		)
 		table.insert(
 			lines,
-			"UnitId: " .. tostring(action.UnitId or "вЂ”")
+			"UnitId: " .. tostring(action.UnitId or "—")
 		)
 		table.insert(
 			lines,
@@ -491,16 +493,16 @@ local function appendFailureReport(message, context)
 				.. tostring(
 					action.Unit
 						or action.PreviousUnit
-						or "вЂ”"
+						or "—"
 				)
 		)
 		table.insert(
 			lines,
-			"ActionWave: " .. tostring(action.Wave or "вЂ”")
+			"ActionWave: " .. tostring(action.Wave or "—")
 		)
 		table.insert(
 			lines,
-			"ActionTiming: " .. tostring(action.Timing or "вЂ”")
+			"ActionTiming: " .. tostring(action.Timing or "—")
 		)
 	end
 
@@ -530,7 +532,7 @@ local function appendFailureReport(message, context)
 	if success then
 		updateLinoriaLabel(
 			"FailureReport",
-			"Failure Report: Р·Р°РїРёСЃР°РЅ РІ "
+			"Failure Report: записан в "
 				.. ERROR_LOG_PATH
 		)
 	end
@@ -571,7 +573,7 @@ local function launchVipServer()
 		if success and result ~= false then
 			setDebug(
 				"Auto VIP",
-				"РћС‚РєСЂС‹РІР°СЋ СѓРєР°Р·Р°РЅРЅС‹Р№ VIP-СЃРµСЂРІРµСЂ...",
+				"Открываю указанный VIP-сервер...",
 				"success"
 			)
 			return true
@@ -585,7 +587,7 @@ local function launchVipServer()
 	if browserSuccess then
 		setDebug(
 			"Auto VIP",
-			"РћС‚РєСЂС‹РІР°СЋ VIP-СЃСЃС‹Р»РєСѓ С‡РµСЂРµР· Roblox...",
+			"Открываю VIP-ссылку через Roblox...",
 			"success"
 		)
 		return true
@@ -598,8 +600,8 @@ local function launchVipServer()
 	end
 
 	local errorMessage =
-		"Executor РЅРµ РїРѕРґРґРµСЂР¶РёРІР°РµС‚ Р°РІС‚РѕРјР°С‚РёС‡РµСЃРєРѕРµ РѕС‚РєСЂС‹С‚РёРµ VIP-СЃСЃС‹Р»РєРё. "
-		.. "РЎСЃС‹Р»РєР° СЃРєРѕРїРёСЂРѕРІР°РЅР° РІ Р±СѓС„РµСЂ РѕР±РјРµРЅР°."
+		"Executor не поддерживает автоматическое открытие VIP-ссылки. "
+		.. "Ссылка скопирована в буфер обмена."
 
 	appendFailureReport(errorMessage, {
 		Stage = "Auto VIP After Game",
@@ -676,7 +678,7 @@ for slotNumber = 1, 6 do
 	emptyText.Position = UDim2.new(0.5, 0, 0, 29)
 	emptyText.Size = UDim2.fromOffset(42, 20)
 	emptyText.BackgroundTransparency = 1
-	emptyText.Text = "вЂ”"
+	emptyText.Text = "—"
 	emptyText.TextColor3 = Color3.fromRGB(101, 105, 115)
 	emptyText.TextSize = 16
 	emptyText.Font = Enum.Font.GothamBold
@@ -705,7 +707,7 @@ for slotNumber = 1, 6 do
 	unitName.Position = UDim2.new(0, 3, 1, -18)
 	unitName.Size = UDim2.new(1, -6, 0, 14)
 	unitName.BackgroundTransparency = 1
-	unitName.Text = "РџСѓСЃС‚Рѕ"
+	unitName.Text = "Пусто"
 	unitName.TextColor3 = Color3.fromRGB(177, 180, 188)
 	unitName.TextSize = 8
 	unitName.Font = Enum.Font.GothamMedium
@@ -753,7 +755,7 @@ local function createBalanceLabel(name, prefix, layoutOrder)
 	label.Name = name
 	label.Size = UDim2.fromOffset(120, 25)
 	label.BackgroundTransparency = 1
-	label.Text = prefix .. " вЂ”"
+	label.Text = prefix .. " —"
 	label.TextColor3 = Color3.fromRGB(218, 220, 225)
 	label.TextSize = 11
 	label.Font = Enum.Font.GothamBold
@@ -832,7 +834,7 @@ recorderStatus.Name = "RecorderStatus"
 recorderStatus.Position = UDim2.fromOffset(16, 335)
 recorderStatus.Size = UDim2.new(1, -32, 0, 18)
 recorderStatus.BackgroundTransparency = 1
-	recorderStatus.Text = "Stopped вЂў actions: 0"
+	recorderStatus.Text = "Stopped • actions: 0"
 recorderStatus.TextColor3 = Color3.fromRGB(151, 155, 165)
 recorderStatus.TextSize = 10
 recorderStatus.Font = Enum.Font.Gotham
@@ -1258,7 +1260,7 @@ local function getCurrentGameBalance()
 		end
 	end
 
-	return "вЂ”"
+	return "—"
 end
 
 
@@ -1315,11 +1317,11 @@ local function renderProfile()
 	end
 
 	coinsLabel.Text = "COINS: " .. tostring(
-		profileSnapshot.Coins or "вЂ”"
+		profileSnapshot.Coins or "—"
 	)
 
 	gemsLabel.Text = "GEMS: " .. tostring(
-		profileSnapshot.Gems or "вЂ”"
+		profileSnapshot.Gems or "—"
 	)
 
 	gameBalanceLabel.Text = "IN-GAME CASH: "
@@ -1338,15 +1340,15 @@ local function renderProfile()
 
 	updateLinoriaLabel(
 		"MetadataMap",
-		"РљР°СЂС‚Р°: " .. tostring(readInfoValue("Map") or "Unknown")
+		"Карта: " .. tostring(readInfoValue("Map") or "Unknown")
 	)
 	updateLinoriaLabel(
 		"MetadataMode",
-		"Р РµР¶РёРј: " .. tostring(readInfoValue("Mode") or "Unknown")
+		"Режим: " .. tostring(readInfoValue("Mode") or "Unknown")
 	)
 	updateLinoriaLabel(
 		"MetadataDeck",
-		"РљРѕР»РѕРґР°: "
+		"Колода: "
 			.. (#deckNames > 0
 				and table.concat(deckNames, ", ")
 				or "Unknown")
@@ -1611,7 +1613,7 @@ local function updateRecorderStatus()
 	local statusText
 
 	if recording then
-		statusText = "Recording вЂў actions: "
+		statusText = "Recording • actions: "
 			.. tostring(#recordedActions)
 
 		recorderStatus.Text = statusText
@@ -1622,7 +1624,7 @@ local function updateRecorderStatus()
 		stopRecordingButton.BackgroundColor3 =
 			Color3.fromRGB(92, 43, 43)
 	else
-		statusText = "Stopped вЂў actions: "
+		statusText = "Stopped • actions: "
 			.. tostring(#recordedActions)
 
 		recorderStatus.Text = statusText
@@ -1827,7 +1829,7 @@ local function startHamsterStrategyPlayer()
 			)
 			table.insert(
 				lines,
-				"UnitId: " .. tostring(action.UnitId or "вЂ”")
+				"UnitId: " .. tostring(action.UnitId or "—")
 			)
 			table.insert(
 				lines,
@@ -1835,21 +1837,21 @@ local function startHamsterStrategyPlayer()
 					.. tostring(
 						action.Unit
 							or action.PreviousUnit
-							or "вЂ”"
+							or "—"
 					)
 			)
 			table.insert(
 				lines,
-				"ActionWave: " .. tostring(action.Wave or "вЂ”")
+				"ActionWave: " .. tostring(action.Wave or "—")
 			)
 			table.insert(
 				lines,
 				"ActionTiming: "
-					.. tostring(action.Timing or "вЂ”")
+					.. tostring(action.Timing or "—")
 			)
 			table.insert(
 				lines,
-				"ActionPrice: " .. tostring(action.Price or "вЂ”")
+				"ActionPrice: " .. tostring(action.Price or "—")
 			)
 		end
 
@@ -1933,7 +1935,7 @@ local function startHamsterStrategyPlayer()
 			local success, result = pcall(launcher, deepLink)
 
 			if success and result ~= false then
-				log("РћС‚РєСЂС‹РІР°СЋ СѓРєР°Р·Р°РЅРЅС‹Р№ VIP-СЃРµСЂРІРµСЂ.")
+				log("Открываю указанный VIP-сервер.")
 				return true
 			end
 		end
@@ -1943,7 +1945,7 @@ local function startHamsterStrategyPlayer()
 		end)
 
 		if browserSuccess then
-			log("РћС‚РєСЂС‹РІР°СЋ VIP-СЃСЃС‹Р»РєСѓ С‡РµСЂРµР· Roblox.")
+			log("Открываю VIP-ссылку через Roblox.")
 			return true
 		end
 
@@ -1954,8 +1956,8 @@ local function startHamsterStrategyPlayer()
 		end
 
 		fail(
-			"Executor РЅРµ РїРѕРґРґРµСЂР¶РёРІР°РµС‚ Р°РІС‚РѕРјР°С‚РёС‡РµСЃРєРѕРµ РѕС‚РєСЂС‹С‚РёРµ "
-				.. "VIP-СЃСЃС‹Р»РєРё. РЎСЃС‹Р»РєР° СЃРєРѕРїРёСЂРѕРІР°РЅР° РІ Р±СѓС„РµСЂ РѕР±РјРµРЅР°.",
+			"Executor не поддерживает автоматическое открытие "
+				.. "VIP-ссылки. Ссылка скопирована в буфер обмена.",
 			nil,
 			nil,
 			"Auto VIP After Game"
@@ -2021,7 +2023,7 @@ local function startHamsterStrategyPlayer()
 			suffix = " wave " .. tostring(action.Wave or "?")
 		elseif action.Type == "Target" then
 			suffix = suffix
-				.. " в†’ "
+				.. " → "
 				.. tostring(action.Mode or "?")
 		end
 
@@ -2057,7 +2059,7 @@ local function startHamsterStrategyPlayer()
 			.. "]"
 
 		if statusText and tostring(statusText) ~= "" then
-			text = text .. " вЂў " .. tostring(statusText)
+			text = text .. " • " .. tostring(statusText)
 		end
 
 		overlayLabel.Text = text
@@ -2144,7 +2146,7 @@ local function startHamsterStrategyPlayer()
 
 		if not lobby then
 			return false,
-				"РўРµРєСѓС‰РёР№ СЃРµСЂРІРµСЂ РЅРµ СЏРІР»СЏРµС‚СЃСЏ РїРѕРґРґРµСЂР¶РёРІР°РµРјС‹Рј Р»РѕР±Р±Рё."
+				"Текущий сервер не является поддерживаемым лобби."
 		end
 
 		local elevators = lobby:WaitForChild("Elevators", 30)
@@ -2153,7 +2155,7 @@ local function startHamsterStrategyPlayer()
 
 		if not elevators or not lobbyEvents then
 			return false,
-				"Р’ Р»РѕР±Р±Рё РЅРµ РЅР°Р№РґРµРЅС‹ Elevators РёР»Рё Events."
+				"В лобби не найдены Elevators или Events."
 		end
 
 		local enterElevator =
@@ -2170,7 +2172,7 @@ local function startHamsterStrategyPlayer()
 			or not enterElevator:IsA("RemoteEvent")
 			or not startElevator:IsA("RemoteEvent") then
 			return false,
-				"РќРµ РЅР°Р№РґРµРЅС‹ RemoteEvent EnterElevator/StartElevator."
+				"Не найдены RemoteEvent EnterElevator/StartElevator."
 		end
 
 		local function trim(text)
@@ -2354,7 +2356,7 @@ local function startHamsterStrategyPlayer()
 
 		if not desiredMap then
 			return false,
-				"Р’ СЃС‚СЂР°С‚РµРіРёРё РЅРµ СѓРєР°Р·Р°РЅР° РєРѕРЅРєСЂРµС‚РЅР°СЏ Map."
+				"В стратегии не указана конкретная Map."
 		end
 
 		local maxPlayers = 1
@@ -2366,7 +2368,7 @@ local function startHamsterStrategyPlayer()
 			character:WaitForChild("HumanoidRootPart", 15)
 
 		if not root then
-			return false, "РџРµСЂСЃРѕРЅР°Р¶ РЅРµ Р·Р°РіСЂСѓР·РёР»СЃСЏ."
+			return false, "Персонаж не загрузился."
 		end
 
 		local ignored = {}
@@ -2413,7 +2415,7 @@ local function startHamsterStrategyPlayer()
 
 			if not selected then
 				log(
-					"Р–РґСѓ СЃРІРѕР±РѕРґРЅС‹Р№ Р»РёС„С‚ РєР°СЂС‚С‹ "
+					"Жду свободный лифт карты "
 						.. desiredMap
 						.. "..."
 				)
@@ -2425,9 +2427,9 @@ local function startHamsterStrategyPlayer()
 
 		if not selected then
 			return false,
-				"РЎРІРѕР±РѕРґРЅС‹Р№ Р»РёС„С‚ РєР°СЂС‚С‹ "
+				"Свободный лифт карты "
 					.. desiredMap
-					.. " РЅРµ РЅР°Р№РґРµРЅ."
+					.. " не найден."
 		end
 
 		local selectedId =
@@ -2443,7 +2445,7 @@ local function startHamsterStrategyPlayer()
 		)
 
 		log(
-			"РџРµСЂРµРјРµС‰С‘РЅ Рє Р»РёС„С‚Сѓ РєР°СЂС‚С‹ "
+			"Перемещён к лифту карты "
 				.. desiredMap
 				.. "."
 		)
@@ -2467,7 +2469,7 @@ local function startHamsterStrategyPlayer()
 
 		if not entered then
 			return false,
-				"РЎРµСЂРІРµСЂ РЅРµ РїРѕРґС‚РІРµСЂРґРёР» РІС…РѕРґ РІ Р»РёС„С‚ "
+				"Сервер не подтвердил вход в лифт "
 					.. selected.Elevator.Name
 					.. "."
 		end
@@ -2479,7 +2481,7 @@ local function startHamsterStrategyPlayer()
 			end
 
 			return false,
-				"Р’С‹Р±СЂР°РЅРЅС‹Р№ Р»РёС„С‚ Р·Р°РїРѕР»РЅРёР»СЃСЏ."
+				"Выбранный лифт заполнился."
 		end
 
 		local desiredMode = validChoice(STRATEGY.Mode)
@@ -2534,9 +2536,9 @@ local function startHamsterStrategyPlayer()
 		startElevator:FireServer(selectedId)
 
 		log(
-			"Р›РёС„С‚ РєР°СЂС‚С‹ "
+			"Лифт карты "
 				.. desiredMap
-				.. " Р·Р°РїСѓС‰РµРЅ."
+				.. " запущен."
 		)
 
 		local selectionTimeout =
@@ -2558,7 +2560,7 @@ local function startHamsterStrategyPlayer()
 					== normalized(desiredMode) then
 					modeConfirmed = true
 					log(
-						"Р РµР¶РёРј РІС‹Р±СЂР°РЅ: "
+						"Режим выбран: "
 							.. desiredMode
 							.. "."
 					)
@@ -2574,7 +2576,7 @@ local function startHamsterStrategyPlayer()
 
 					if sendRemote(modeRemote, desiredMode) then
 						log(
-							"РћС‚РїСЂР°РІР»СЏСЋ РІС‹Р±РѕСЂ СЂРµР¶РёРјР° "
+							"Отправляю выбор режима "
 								.. desiredMode
 								.. "."
 						)
@@ -2596,9 +2598,9 @@ local function startHamsterStrategyPlayer()
 
 		if desiredMode and not modeConfirmed then
 			fail(
-				"РќРµ СѓРґР°Р»РѕСЃСЊ РїРѕРґС‚РІРµСЂРґРёС‚СЊ СЂРµР¶РёРј "
+				"Не удалось подтвердить режим "
 					.. desiredMode
-					.. " РґРѕ Р·Р°РїСѓСЃРєР° РјР°С‚С‡Р°."
+					.. " до запуска матча."
 			)
 		end
 
@@ -2667,7 +2669,7 @@ local function startHamsterStrategyPlayer()
 
 	if lobbyPresent then
 		if STRATEGY.AutoEnterMatch == false then
-			fail("РђРІС‚РѕРІС…РѕРґ РЅР° РєР°СЂС‚Сѓ РѕС‚РєР»СЋС‡С‘РЅ РІ СЃС‚СЂР°С‚РµРіРёРё.")
+			fail("Автовход на карту отключён в стратегии.")
 			environment.HamsterStrategyPlayerRunning = false
 			return
 		end
@@ -2693,9 +2695,9 @@ local function startHamsterStrategyPlayer()
 		and STRATEGY.PlaceId ~= 0
 		and game.PlaceId ~= STRATEGY.PlaceId then
 		fail(
-			"PlaceId РЅРµ СЃРѕРІРїР°РґР°РµС‚ СЃРѕ СЃС‚СЂР°С‚РµРіРёРµР№: РЅСѓР¶РµРЅ "
+			"PlaceId не совпадает со стратегией: нужен "
 				.. tostring(STRATEGY.PlaceId)
-				.. ", СЃРµР№С‡Р°СЃ "
+				.. ", сейчас "
 				.. tostring(game.PlaceId)
 				.. "."
 		)
@@ -2711,7 +2713,7 @@ local function startHamsterStrategyPlayer()
 		ReplicatedStorage:WaitForChild("Events", 45)
 
 	if not info or not functions or not events then
-		fail("РќРµ РЅР°Р№РґРµРЅС‹ РёРіСЂРѕРІС‹Рµ РїР°РїРєРё Info/Functions/Events.")
+		fail("Не найдены игровые папки Info/Functions/Events.")
 		environment.HamsterStrategyPlayerRunning = false
 		return
 	end
@@ -2730,7 +2732,7 @@ local function startHamsterStrategyPlayer()
 		or not SellTower
 		or not ChangeTowerMode
 		or not GetData then
-		fail("РќРµ РЅР°Р№РґРµРЅС‹ RemoteFunction СѓРїСЂР°РІР»РµРЅРёСЏ СЋРЅРёС‚Р°РјРё.")
+		fail("Не найдены RemoteFunction управления юнитами.")
 		environment.HamsterStrategyPlayerRunning = false
 		return
 	end
@@ -2868,9 +2870,9 @@ local function startHamsterStrategyPlayer()
 		if expectedWave > 0
 			and currentWave() > expectedWave then
 			fail(
-				"РњР°С‚С‡ СѓР¶Рµ РґРѕС€С‘Р» РґРѕ РІРѕР»РЅС‹ "
+				"Матч уже дошёл до волны "
 					.. tostring(currentWave())
-					.. ", Р° СЃС‚СЂР°С‚РµРіРёСЏ РЅР°С‡РёРЅР°РµС‚СЃСЏ СЃ "
+					.. ", а стратегия начинается с "
 					.. tostring(expectedWave)
 					.. "."
 			)
@@ -2893,9 +2895,9 @@ local function startHamsterStrategyPlayer()
 
 		if formatVersion > SUPPORTED_FORMAT_VERSION then
 			return false,
-				"Р¤РѕСЂРјР°С‚ СЃС‚СЂР°С‚РµРіРёРё "
+				"Формат стратегии "
 					.. tostring(formatVersion)
-					.. " РЅРѕРІРµРµ РїРѕРґРґРµСЂР¶РёРІР°РµРјРѕРіРѕ "
+					.. " новее поддерживаемого "
 					.. tostring(SUPPORTED_FORMAT_VERSION)
 					.. "."
 		end
@@ -2912,9 +2914,9 @@ local function startHamsterStrategyPlayer()
 			and STRATEGY.Map ~= "Unknown"
 			and mapName ~= STRATEGY.Map then
 			return false,
-				"РљР°СЂС‚Р° РЅРµ СЃРѕРІРїР°РґР°РµС‚. РќСѓР¶РЅР° "
+				"Карта не совпадает. Нужна "
 					.. STRATEGY.Map
-					.. ", СЃРµР№С‡Р°СЃ "
+					.. ", сейчас "
 					.. mapName
 		end
 
@@ -2922,9 +2924,9 @@ local function startHamsterStrategyPlayer()
 			and STRATEGY.Mode ~= "Unknown"
 			and modeName ~= STRATEGY.Mode then
 			return false,
-				"Р РµР¶РёРј РЅРµ СЃРѕРІРїР°РґР°РµС‚. РќСѓР¶РµРЅ "
+				"Режим не совпадает. Нужен "
 					.. STRATEGY.Mode
-					.. ", СЃРµР№С‡Р°СЃ "
+					.. ", сейчас "
 					.. modeName
 		end
 
@@ -2934,7 +2936,7 @@ local function startHamsterStrategyPlayer()
 
 		if not success or typeof(data) ~= "table" then
 			return false,
-				"РЎРµСЂРІРµСЂ РЅРµ РІРµСЂРЅСѓР» РґР°РЅРЅС‹Рµ С‚РµРєСѓС‰РµР№ РєРѕР»РѕРґС‹."
+				"Сервер не вернул данные текущей колоды."
 		end
 
 		local deckNames = {}
@@ -2970,7 +2972,7 @@ local function startHamsterStrategyPlayer()
 						string.lower(requiredName)
 					] then
 					return false,
-						"Р’ РєРѕР»РѕРґРµ РЅРµС‚ СЋРЅРёС‚Р° "
+						"В колоде нет юнита "
 							.. requiredName
 							.. "."
 				end
@@ -2990,9 +2992,9 @@ local function startHamsterStrategyPlayer()
 
 				if needsUnitId and not unitId then
 					return false,
-						"Р’ РґРµР№СЃС‚РІРёРё #"
+						"В действии #"
 							.. tostring(index)
-							.. " РѕС‚СЃСѓС‚СЃС‚РІСѓРµС‚ UnitId."
+							.. " отсутствует UnitId."
 				end
 
 				if actionType == "Place" then
@@ -3000,15 +3002,15 @@ local function startHamsterStrategyPlayer()
 						return false,
 							"UnitId #"
 								.. tostring(unitId)
-								.. " РёСЃРїРѕР»СЊР·СѓРµС‚СЃСЏ РЅРµСЃРєРѕР»СЊРєРёРјРё Place."
+								.. " используется несколькими Place."
 					end
 
 					placedUnitIds[unitId] = true
 				elseif needsUnitId and not placedUnitIds[unitId] then
 					return false,
-						"Р”РµР№СЃС‚РІРёРµ #"
+						"Действие #"
 							.. tostring(index)
-							.. " СЃСЃС‹Р»Р°РµС‚СЃСЏ РЅР° UnitId РґРѕ Place."
+							.. " ссылается на UnitId до Place."
 				end
 			end
 		end
@@ -3480,7 +3482,7 @@ local function startHamsterStrategyPlayer()
 				table.insert(
 					waitingFor,
 					string.format(
-						"РљР” %.2f",
+						"КД %.2f",
 						cooldownRemaining
 					)
 				)
@@ -3489,7 +3491,7 @@ local function startHamsterStrategyPlayer()
 			if not waveReady then
 				table.insert(
 					waitingFor,
-					"РІРѕР»РЅР° "
+					"волна "
 						.. tostring(currentWaveNumber)
 						.. "/"
 						.. tostring(expectedWave)
@@ -3499,7 +3501,7 @@ local function startHamsterStrategyPlayer()
 			if not moneyReady then
 				table.insert(
 					waitingFor,
-					"РґРµРЅСЊРіРё "
+					"деньги "
 						.. tostring(math.floor(currentGold))
 						.. "/"
 						.. tostring(math.floor(requiredGold))
@@ -3511,38 +3513,38 @@ local function startHamsterStrategyPlayer()
 				actionIndex,
 				cooldownRemaining,
 				#waitingFor > 0
-					and ("Р–РґСѓ: " .. table.concat(waitingFor, ", "))
-					or "Р’С‹РїРѕР»РЅСЏСЋ СЃСЂР°Р·Сѓ"
+					and ("Жду: " .. table.concat(waitingFor, ", "))
+					or "Выполняю сразу"
 			)
 
 			task.wait(0.02)
 		end
 
 		return false,
-			"РњР°С‚С‡ Р·Р°РєРѕРЅС‡РёР»СЃСЏ РґРѕ РІС‹РїРѕР»РЅРµРЅРёСЏ СѓСЃР»РѕРІРёР№ РґРµР№СЃС‚РІРёСЏ."
+			"Матч закончился до выполнения условий действия."
 	end
 
 	local function playPlace(action)
 		local unitId = tonumber(action.UnitId)
 
 		if not unitId then
-			return false, "Р’ Place РѕС‚СЃСѓС‚СЃС‚РІСѓРµС‚ UnitId."
+			return false, "В Place отсутствует UnitId."
 		end
 
 		if getRegisteredTower(unitId) then
 			return false,
-				"UnitId #" .. tostring(unitId) .. " СѓР¶Рµ РїСЂРёРІСЏР·Р°РЅ."
+				"UnitId #" .. tostring(unitId) .. " уже привязан."
 		end
 
 		if not waitForGold(action.Price) then
-			return false, "РњР°С‚С‡ Р·Р°РІРµСЂС€РёР»СЃСЏ РІРѕ РІСЂРµРјСЏ РѕР¶РёРґР°РЅРёСЏ РґРµРЅРµРі."
+			return false, "Матч завершился во время ожидания денег."
 		end
 
 		local cframe = actionCFrame(action)
 		local towerName = action.Template or action.Unit
 
 		if not cframe or not towerName then
-			return false, "Р’ Place РѕС‚СЃСѓС‚СЃС‚РІСѓСЋС‚ CFrame РёР»Рё РёРјСЏ."
+			return false, "В Place отсутствуют CFrame или имя."
 		end
 
 		local baseline = captureTowerSet()
@@ -3591,7 +3593,7 @@ local function startHamsterStrategyPlayer()
 		end
 
 		return false,
-			"Place РЅРµ СЃРѕР·РґР°Р» РЅРѕРІСѓСЋ РјРѕРґРµР»СЊ РґР»СЏ UnitId #"
+			"Place не создал новую модель для UnitId #"
 				.. tostring(unitId)
 	end
 
@@ -3610,7 +3612,7 @@ local function startHamsterStrategyPlayer()
 			else
 				if not towerMatchesAction(tower, action) then
 					return false,
-						"РџСЂРёРІСЏР·Р°РЅРЅС‹Р№ Upgrade-СЋРЅРёС‚ РёРјРµРµС‚ РґСЂСѓРіРѕРµ РёРјСЏ."
+						"Привязанный Upgrade-юнит имеет другое имя."
 				end
 
 				local config = tower:FindFirstChild("Config")
@@ -3623,9 +3625,9 @@ local function startHamsterStrategyPlayer()
 
 				if currentLevel ~= targetLevel - 1 then
 					return false,
-						"РЈСЂРѕРІРµРЅСЊ UnitId #"
+						"Уровень UnitId #"
 							.. tostring(action.UnitId)
-							.. " РЅРµ СЃРѕРІРїР°РґР°РµС‚ РїРµСЂРµРґ Upgrade."
+							.. " не совпадает перед Upgrade."
 				end
 
 				local upgrade =
@@ -3641,7 +3643,7 @@ local function startHamsterStrategyPlayer()
 				if nextTower and root then
 					if not waitForGold(action.Price) then
 						return false,
-							"РњР°С‚С‡ Р·Р°РІРµСЂС€РёР»СЃСЏ РїСЂРё РѕР¶РёРґР°РЅРёРё РґРµРЅРµРі."
+							"Матч завершился при ожидании денег."
 					end
 
 					local success, result = pcall(function()
@@ -3677,7 +3679,7 @@ local function startHamsterStrategyPlayer()
 		end
 
 		return false,
-			"Upgrade РЅРµ Р±С‹Р» РїСЂРёРЅСЏС‚ РёР»Рё UnitId РїРѕС‚РµСЂСЏРЅ."
+			"Upgrade не был принят или UnitId потерян."
 	end
 
 	local function playSell(action)
@@ -3696,7 +3698,7 @@ local function startHamsterStrategyPlayer()
 			else
 				if not towerMatchesAction(tower, action) then
 					return false,
-						"РџСЂРёРІСЏР·Р°РЅРЅС‹Р№ Sell-СЋРЅРёС‚ РёРјРµРµС‚ РґСЂСѓРіРѕРµ РёРјСЏ."
+						"Привязанный Sell-юнит имеет другое имя."
 				end
 
 				local sellLevel = getTowerLevel(tower)
@@ -3704,7 +3706,7 @@ local function startHamsterStrategyPlayer()
 				if action.Level
 					and sellLevel ~= tonumber(action.Level) then
 					return false,
-						"РЈСЂРѕРІРµРЅСЊ СЋРЅРёС‚Р° РЅРµ СЃРѕРІРїР°РґР°РµС‚ РїРµСЂРµРґ Sell."
+						"Уровень юнита не совпадает перед Sell."
 				end
 
 				local success, result = pcall(function()
@@ -3729,14 +3731,14 @@ local function startHamsterStrategyPlayer()
 			end
 		end
 
-		return false, "Sell РЅРµ Р±С‹Р» РїСЂРёРЅСЏС‚ СЃРµСЂРІРµСЂРѕРј."
+		return false, "Sell не был принят сервером."
 	end
 
 	local function playTarget(action)
 		local desiredMode = tostring(action.Mode or "")
 
 		if desiredMode == "" then
-			return false, "Р’ Target РѕС‚СЃСѓС‚СЃС‚РІСѓРµС‚ СЂРµР¶РёРј."
+			return false, "В Target отсутствует режим."
 		end
 
 		for attempt = 1, MAX_RETRIES do
@@ -3747,7 +3749,7 @@ local function startHamsterStrategyPlayer()
 			else
 				if not towerMatchesAction(tower, action) then
 					return false,
-						"РџСЂРёРІСЏР·Р°РЅРЅС‹Р№ Target-СЋРЅРёС‚ РёРјРµРµС‚ РґСЂСѓРіРѕРµ РёРјСЏ."
+						"Привязанный Target-юнит имеет другое имя."
 				end
 
 				local config = tower:FindFirstChild("Config")
@@ -3757,7 +3759,7 @@ local function startHamsterStrategyPlayer()
 				if action.Level
 					and targetLevel ~= tonumber(action.Level) then
 					return false,
-						"РЈСЂРѕРІРµРЅСЊ СЋРЅРёС‚Р° РЅРµ СЃРѕРІРїР°РґР°РµС‚ РїРµСЂРµРґ Target."
+						"Уровень юнита не совпадает перед Target."
 				end
 
 				local currentMode = tostring(
@@ -3781,7 +3783,7 @@ local function startHamsterStrategyPlayer()
 		end
 
 		return false,
-			"РќРµ СѓРґР°Р»РѕСЃСЊ СѓСЃС‚Р°РЅРѕРІРёС‚СЊ Target " .. desiredMode .. "."
+			"Не удалось установить Target " .. desiredMode .. "."
 	end
 
 	local function getSkipButton()
@@ -3801,7 +3803,7 @@ local function startHamsterStrategyPlayer()
 
 	local function playSkip(action)
 		if not VoteSkip or not VoteSkip:IsA("RemoteEvent") then
-			return false, "RemoteEvent VoteSkip РЅРµ РЅР°Р№РґРµРЅ."
+			return false, "RemoteEvent VoteSkip не найден."
 		end
 
 		local expectedWave = tonumber(action.Wave) or 0
@@ -3861,18 +3863,18 @@ local function startHamsterStrategyPlayer()
 			task.wait(RETRY_DELAY)
 		end
 
-		return false, "Skip РЅРµ Р±С‹Р» РїРѕРґС‚РІРµСЂР¶РґС‘РЅ."
+		return false, "Skip не был подтверждён."
 	end
 
 	local function playSpeed(action)
 		if not Speed or not Speed:IsA("RemoteEvent") then
-			return false, "RemoteEvent Speed РЅРµ РЅР°Р№РґРµРЅ."
+			return false, "RemoteEvent Speed не найден."
 		end
 
 		local speed = tonumber(action.Speed)
 
 		if not speed then
-			return false, "Р’ Speed РѕС‚СЃСѓС‚СЃС‚РІСѓРµС‚ Р·РЅР°С‡РµРЅРёРµ."
+			return false, "В Speed отсутствует значение."
 		end
 
 		local success = pcall(function()
@@ -3880,7 +3882,7 @@ local function startHamsterStrategyPlayer()
 		end)
 
 		return success,
-			success and nil or "Speed РЅРµ Р±С‹Р» РѕС‚РїСЂР°РІР»РµРЅ."
+			success and nil or "Speed не был отправлен."
 	end
 
 	local function playAction(action)
@@ -3899,7 +3901,7 @@ local function startHamsterStrategyPlayer()
 		end
 
 		return false,
-			"РќРµРёР·РІРµСЃС‚РЅРѕРµ РґРµР№СЃС‚РІРёРµ " .. tostring(action.Type)
+			"Неизвестное действие " .. tostring(action.Type)
 	end
 
 	local function handlePostGame()
@@ -3912,7 +3914,7 @@ local function startHamsterStrategyPlayer()
 
 			if exitGame and exitGame:IsA("RemoteEvent") then
 				exitGame:FireServer()
-				log("РћС‚РїСЂР°РІР»РµРЅ РіРѕР»РѕСЃ Replay.")
+				log("Отправлен голос Replay.")
 			end
 		elseif STRATEGY.AutoBackToLobby then
 			local lobbyTeleport =
@@ -3921,7 +3923,7 @@ local function startHamsterStrategyPlayer()
 			if lobbyTeleport
 				and lobbyTeleport:IsA("RemoteEvent") then
 				lobbyTeleport:FireServer()
-				log("Р’РѕР·РІСЂР°С‰Р°СЋСЃСЊ РІ Р»РѕР±Р±Рё.")
+				log("Возвращаюсь в лобби.")
 			end
 		end
 	end
@@ -3935,7 +3937,7 @@ local function startHamsterStrategyPlayer()
 
 		if not compatible then
 			fail(
-				"РџСЂРѕРІРµСЂРєР° СЃРѕРІРјРµСЃС‚РёРјРѕСЃС‚Рё РЅРµ РїСЂРѕР№РґРµРЅР°: "
+				"Проверка совместимости не пройдена: "
 					.. tostring(compatibilityError),
 				nil,
 				nil,
@@ -3951,9 +3953,9 @@ local function startHamsterStrategyPlayer()
 		local lastActionAt = nil
 
 		log(
-			"Р—Р°РїСѓСЃРє: "
+			"Запуск: "
 				.. tostring(#(STRATEGY.Actions or {}))
-				.. " РґРµР№СЃС‚РІРёР№."
+				.. " действий."
 		)
 
 		for index, action in ipairs(STRATEGY.Actions or {}) do
@@ -3967,7 +3969,7 @@ local function startHamsterStrategyPlayer()
 
 				if not timingOk then
 					fail(
-						"Р”РµР№СЃС‚РІРёРµ #"
+						"Действие #"
 							.. tostring(index)
 							.. ": "
 							.. tostring(timingError),
@@ -3984,7 +3986,7 @@ local function startHamsterStrategyPlayer()
 
 				if not success then
 					fail(
-						"Р”РµР№СЃС‚РІРёРµ #"
+						"Действие #"
 							.. tostring(index)
 							.. " ("
 							.. tostring(action.Type)
@@ -4004,21 +4006,21 @@ local function startHamsterStrategyPlayer()
 						.. tostring(index)
 						.. " "
 						.. tostring(action.Type)
-						.. " РІС‹РїРѕР»РЅРµРЅРѕ."
+						.. " выполнено."
 				)
 			else
 				log(
 					"#"
 						.. tostring(index)
-						.. " РїСЂРѕРїСѓС‰РµРЅРѕ: РіСЂСѓРїРїР° "
+						.. " пропущено: группа "
 						.. tostring(action.Group)
-						.. " РѕС‚РєР»СЋС‡РµРЅР°."
+						.. " отключена."
 				)
 			end
 		end
 
 		updateNextAction(nil)
-		log("РЎС‚СЂР°С‚РµРіРёСЏ СѓСЃРїРµС€РЅРѕ РІС‹РїРѕР»РЅРµРЅР°.")
+		log("Стратегия успешно выполнена.")
 		return true
 	end
 
@@ -4344,9 +4346,9 @@ saveAutosave = function()
 	autosaveWriting = false
 	updateLinoriaLabel(
 		"Autosave",
-		"Autosave: " .. AUTOSAVE_PATH .. " вЂў "
+		"Autosave: " .. AUTOSAVE_PATH .. " • "
 			.. tostring(#recordedActions)
-			.. " РґРµР№СЃС‚РІРёР№"
+			.. " действий"
 	)
 	return true
 end
@@ -4357,7 +4359,7 @@ local function restoreAutosave()
 		or typeof(isfile) ~= "function" then
 		setDebug(
 			"Autosave",
-			"Р¤СѓРЅРєС†РёРё readfile/writefile/isfile РЅРµРґРѕСЃС‚СѓРїРЅС‹.",
+			"Функции readfile/writefile/isfile недоступны.",
 			"error"
 		)
 		return false
@@ -4366,7 +4368,7 @@ local function restoreAutosave()
 	if not executorFileExists(AUTOSAVE_PATH) then
 		setDebug(
 			"Autosave",
-			"Strat_Autosave.txt РЅРµ РЅР°Р№РґРµРЅ.",
+			"Strat_Autosave.txt не найден.",
 			"waiting"
 		)
 		return false
@@ -4382,7 +4384,7 @@ local function restoreAutosave()
 	if not success then
 		setDebug(
 			"Autosave",
-			"РќРµ СѓРґР°Р»РѕСЃСЊ РІРѕСЃСЃС‚Р°РЅРѕРІРёС‚СЊ Р·Р°РїРёСЃСЊ: "
+			"Не удалось восстановить запись: "
 				.. tostring(errorMessage),
 			"error"
 		)
@@ -4400,8 +4402,8 @@ end
 local function saveStrategy()
 	if typeof(writefile) ~= "function" then
 		setDebug(
-			"РћС€РёР±РєР° СЃРѕС…СЂР°РЅРµРЅРёСЏ",
-			"writefile РЅРµРґРѕСЃС‚СѓРїРµРЅ. Strat.txt РЅРµ Р±С‹Р» СЃРѕС…СЂР°РЅС‘РЅ.",
+			"Ошибка сохранения",
+			"writefile недоступен. Strat.txt не был сохранён.",
 			"error"
 		)
 		return false
@@ -4412,8 +4414,8 @@ local function saveStrategy()
 
 	if not success then
 		setDebug(
-			"РћС€РёР±РєР° СЃРѕС…СЂР°РЅРµРЅРёСЏ",
-			"РќРµ СѓРґР°Р»РѕСЃСЊ СЃРѕС…СЂР°РЅРёС‚СЊ Strat.txt: "
+			"Ошибка сохранения",
+			"Не удалось сохранить Strat.txt: "
 				.. tostring(errorMessage),
 			"error"
 		)
@@ -4421,7 +4423,7 @@ local function saveStrategy()
 	end
 
 	setDebug(
-		"РЎРѕС…СЂР°РЅРµРЅРѕ",
+		"Сохранено",
 		"Macro successfully saved to " .. STRATEGY_PATH,
 		"success"
 	)
@@ -4558,9 +4560,9 @@ local function appendPlaceAction(snapshot)
 
 	setDebug(
 		"Recorder",
-		"РџРѕСЃС‚Р°РІРёР» "
+		"Поставил "
 			.. snapshot.Name
-			.. " РЅР° "
+			.. " на "
 			.. formatCoordinates(snapshot.Position),
 		"success"
 	)
@@ -4608,9 +4610,9 @@ local function appendUpgradeAction(snapshot, previousSnapshot)
 
 	setDebug(
 		"Recorder",
-		"РџСЂРѕРєР°С‡Р°Р» "
+		"Прокачал "
 			.. snapshot.Name
-			.. " РЅР° СЃР»РµРґСѓСЋС‰РёР№ СѓСЂРѕРІРµРЅСЊ Р·Р° "
+			.. " на следующий уровень за "
 			.. tostring(price)
 			.. "!",
 		"success"
@@ -4640,9 +4642,9 @@ local function appendSkipAction(waveNumber)
 
 	setDebug(
 		"Recorder",
-		"РџСЂРѕРїСѓСЃС‚РёР» РІРѕР»РЅСѓ "
+		"Пропустил волну "
 			.. tostring(waveNumber)
-			.. " РЅР° РІСЂРµРјРµРЅРё "
+			.. " на времени "
 			.. timing
 			.. "!",
 		"success"
@@ -4676,9 +4678,9 @@ appendSpeedAction = function(speed)
 
 	setDebug(
 		"Recorder",
-		"РЈСЃС‚Р°РЅРѕРІРёР» СЃРєРѕСЂРѕСЃС‚СЊ x"
+		"Установил скорость x"
 			.. tostring(speed)
-			.. " РЅР° РІСЂРµРјРµРЅРё "
+			.. " на времени "
 			.. timing
 			.. "!",
 		"success"
@@ -4724,11 +4726,11 @@ local function appendSellAction(snapshot, recordedMoment)
 
 	setDebug(
 		"Recorder",
-		"РџСЂРѕРґР°Р» "
+		"Продал "
 			.. snapshot.Name
-			.. " Р·Р° "
+			.. " за "
 			.. tostring(snapshot.SellValue)
-			.. " РЅР° "
+			.. " на "
 			.. formatCoordinates(snapshot.Position)
 			.. "!",
 		"success"
@@ -4773,9 +4775,9 @@ local function appendTargetAction(snapshot, targetMode)
 
 	setDebug(
 		"Recorder",
-		"РР·РјРµРЅРёР» Target "
+		"Изменил Target "
 			.. snapshot.Name
-			.. " РЅР° "
+			.. " на "
 			.. tostring(targetMode)
 			.. "!",
 		"success"
@@ -4982,13 +4984,13 @@ local function clearInspectorSelection()
 		inspectorHighlight = nil
 	end
 
-	updateLinoriaLabel("InspectorName", "Р®РЅРёС‚: РЅРµ РІС‹Р±СЂР°РЅ")
-	updateLinoriaLabel("InspectorId", "ID: вЂ”")
-	updateLinoriaLabel("InspectorLevel", "РЈСЂРѕРІРµРЅСЊ: вЂ”")
-	updateLinoriaLabel("InspectorTarget", "Target Mode: вЂ”")
-	updateLinoriaLabel("InspectorPosition", "РљРѕРѕСЂРґРёРЅР°С‚С‹: вЂ”")
-	updateLinoriaLabel("InspectorSpent", "РџРѕС‚СЂР°С‡РµРЅРѕ: вЂ”")
-	updateLinoriaLabel("InspectorAction", "РЎС‚СЂРѕРєР° Strat.txt: вЂ”")
+	updateLinoriaLabel("InspectorName", "Юнит: не выбран")
+	updateLinoriaLabel("InspectorId", "ID: —")
+	updateLinoriaLabel("InspectorLevel", "Уровень: —")
+	updateLinoriaLabel("InspectorTarget", "Target Mode: —")
+	updateLinoriaLabel("InspectorPosition", "Координаты: —")
+	updateLinoriaLabel("InspectorSpent", "Потрачено: —")
+	updateLinoriaLabel("InspectorAction", "Строка Strat.txt: —")
 end
 
 local function updateUnitInspector()
@@ -5029,15 +5031,15 @@ local function updateUnitInspector()
 
 	updateLinoriaLabel(
 		"InspectorName",
-		"Р®РЅРёС‚: " .. snapshot.Name
+		"Юнит: " .. snapshot.Name
 	)
 	updateLinoriaLabel(
 		"InspectorId",
-		"ID: #" .. tostring(snapshot.UnitId or "вЂ”")
+		"ID: #" .. tostring(snapshot.UnitId or "—")
 	)
 	updateLinoriaLabel(
 		"InspectorLevel",
-		"РЈСЂРѕРІРµРЅСЊ: " .. tostring(snapshot.Level)
+		"Уровень: " .. tostring(snapshot.Level)
 	)
 	updateLinoriaLabel(
 		"InspectorTarget",
@@ -5045,16 +5047,16 @@ local function updateUnitInspector()
 	)
 	updateLinoriaLabel(
 		"InspectorPosition",
-		"РљРѕРѕСЂРґРёРЅР°С‚С‹: " .. formatCoordinates(snapshot.Position)
+		"Координаты: " .. formatCoordinates(snapshot.Position)
 	)
 	updateLinoriaLabel(
 		"InspectorSpent",
-		"РџРѕС‚СЂР°С‡РµРЅРѕ: " .. tostring(totalSpent)
+		"Потрачено: " .. tostring(totalSpent)
 	)
 	updateLinoriaLabel(
 		"InspectorAction",
-		"РЎС‚СЂРѕРєР° Strat.txt: "
-			.. (linkedAction and ("#" .. linkedAction) or "РµС‰С‘ РЅРµ Р·Р°РїРёСЃР°РЅ")
+		"Строка Strat.txt: "
+			.. (linkedAction and ("#" .. linkedAction) or "ещё не записан")
 	)
 end
 
@@ -5084,7 +5086,7 @@ local function selectInspectorTower(tower)
 	updateUnitInspector()
 	setDebug(
 		"Inspector",
-		"Р’С‹Р±СЂР°РЅ "
+		"Выбран "
 			.. snapshot.Name
 			.. " #"
 			.. tostring(snapshot.UnitId),
@@ -5566,7 +5568,7 @@ end
 
 local function loadLinoriaModule(relativePath)
 	if typeof(loadstring) ~= "function" then
-		error("loadstring РЅРµРґРѕСЃС‚СѓРїРµРЅ")
+		error("loadstring недоступен")
 	end
 
 	local source = game:HttpGet(
@@ -5575,7 +5577,7 @@ local function loadLinoriaModule(relativePath)
 	local chunk, compileError = loadstring(source)
 
 	if not chunk then
-		error(compileError or ("РќРµ СѓРґР°Р»РѕСЃСЊ Р·Р°РіСЂСѓР·РёС‚СЊ " .. relativePath))
+		error(compileError or ("Не удалось загрузить " .. relativePath))
 	end
 
 	return chunk()
@@ -5593,8 +5595,8 @@ local function initializeLinoriaUi()
 
 		local Library = chunk()
 		local window = Library:CreateWindow({
-			Name = "Hamster Hub рџђ№рџ”Ґ",
-			LoadingTitle = "Hamster Hub рџђ№рџ”Ґ",
+			Name = HUB_TITLE,
+			LoadingTitle = HUB_TITLE,
 			LoadingSubtitle = "Strategy automation",
 			Theme = "Dark",
 			DisableRayfieldPrompts = true,
@@ -5656,7 +5658,7 @@ local function initializeLinoriaUi()
 				setAutoSkip(false)
 				setAutoX2Speed(false)
 				Library:Notify({
-					Title = "Hamster Hub",
+					Title = HUB_TITLE,
 					Content = "All automation has been stopped.",
 					Duration = 3,
 				})
@@ -5670,7 +5672,7 @@ local function initializeLinoriaUi()
 		})
 		strategyTab:CreateParagraph({
 			Title = "Supported Modes",
-			Content = "Easy вЂў Medium вЂў Hard вЂў Nightmare вЂў Crazy вЂў Boss Rush",
+			Content = "Easy • Medium • Hard • Nightmare • Crazy • Boss Rush",
 		})
 		rayfieldLabels.LiveMaps = strategyTab:CreateParagraph({
 			Title = "Live Elevator Scanner",
@@ -5705,7 +5707,7 @@ local function initializeLinoriaUi()
 					end
 				end
 				local content = #compact > 0
-					and table.concat(compact, " вЂў ")
+					and table.concat(compact, " • ")
 					or "Searching for a solo elevator..."
 				if rayfieldLabels.LiveMaps
 					and typeof(rayfieldLabels.LiveMaps.Set) == "function" then
@@ -5740,7 +5742,7 @@ local function initializeLinoriaUi()
 
 		recorderTab:CreateSection("Macro Recorder")
 		rayfieldLabels.RecorderStatus = recorderTab:CreateLabel(
-			"Recorder stopped вЂў actions: " .. tostring(#recordedActions)
+			"Recorder stopped • actions: " .. tostring(#recordedActions)
 		)
 		rayfieldLabels.Autosave = recorderTab:CreateLabel(
 			"Autosave path: " .. AUTOSAVE_PATH
@@ -5813,18 +5815,18 @@ local function initializeLinoriaUi()
 		}
 
 		local recorderControls =
-			tabs.Recorder:AddLeftGroupbox("РЈРїСЂР°РІР»РµРЅРёРµ Р·Р°РїРёСЃСЊСЋ")
+			tabs.Recorder:AddLeftGroupbox("Управление записью")
 
 		linoriaLabels.RecorderStatus =
 			recorderControls:AddLabel(
-				"РћСЃС‚Р°РЅРѕРІР»РµРЅ вЂў РґРµР№СЃС‚РІРёР№: "
+				"Остановлен • действий: "
 					.. tostring(#recordedActions),
 				true
 			)
 
 		linoriaLabels.Autosave =
 			recorderControls:AddLabel(
-				"Autosave: РѕР¶РёРґР°РЅРёРµ Р·Р°РїРёСЃРё",
+				"Autosave: ожидание записи",
 				true
 			)
 
@@ -5839,15 +5841,15 @@ local function initializeLinoriaUi()
 		if hasAutosave then
 			updateLinoriaLabel(
 				"Autosave",
-				"Autosave: РЅР°Р№РґРµРЅ Strat_Autosave.txt вЂ” "
-					.. "РјРѕР¶РЅРѕ РІРѕСЃСЃС‚Р°РЅРѕРІРёС‚СЊ"
+				"Autosave: найден Strat_Autosave.txt — "
+					.. "можно восстановить"
 			)
 		end
 
 		recorderControls:AddButton({
 			Text = "Start Recording",
 			Func = startRecording,
-			Tooltip = "РќР°С‡Р°С‚СЊ РЅРѕРІСѓСЋ Р·Р°РїРёСЃСЊ СЃС‚СЂР°С‚РµРіРёРё",
+			Tooltip = "Начать новую запись стратегии",
 		})
 
 		recorderControls:AddButton({
@@ -5855,21 +5857,21 @@ local function initializeLinoriaUi()
 			Func = function()
 				stopRecording(true)
 			end,
-			Tooltip = "РћСЃС‚Р°РЅРѕРІРёС‚СЊ Р·Р°РїРёСЃСЊ Рё СЃРѕС…СЂР°РЅРёС‚СЊ Strat.txt",
+			Tooltip = "Остановить запись и сохранить Strat.txt",
 		})
 
 		recorderControls:AddButton({
 			Text = "Restore Strat_Autosave.txt",
 			Func = restoreAutosave,
-			Tooltip = "РЎРєРѕРїРёСЂРѕРІР°С‚СЊ Р°РІР°СЂРёР№РЅСѓСЋ Р·Р°РїРёСЃСЊ РІ Strat.txt",
+			Tooltip = "Скопировать аварийную запись в Strat.txt",
 		})
 
 		local playerStatus =
 			tabs.Player:AddLeftGroupbox("Next Action Overlay")
 
 		playerStatus:AddLabel(
-			"Р’Рѕ РІСЂРµРјСЏ Replay СЃРІРµСЂС…Сѓ СЌРєСЂР°РЅР° РїРѕРєР°Р·С‹РІР°РµС‚СЃСЏ СЃР»РµРґСѓСЋС‰РµРµ "
-				.. "РґРµР№СЃС‚РІРёРµ, ID СЋРЅРёС‚Р° Рё РѕР±СЂР°С‚РЅС‹Р№ РѕС‚СЃС‡С‘С‚.",
+			"Во время Replay сверху экрана показывается следующее "
+				.. "действие, ID юнита и обратный отсчёт.",
 			true
 		)
 
@@ -5878,60 +5880,60 @@ local function initializeLinoriaUi()
 		local info = workspace:FindFirstChild("Info")
 
 		metadataGroup:AddLabel(
-			"РђРІС‚РѕСЂ: " .. player.Name,
+			"Автор: " .. player.Name,
 			true
 		)
 		metadataGroup:AddLabel(
-			"Р¤РѕСЂРјР°С‚: V" .. tostring(STRATEGY_FORMAT_VERSION),
+			"Формат: V" .. tostring(STRATEGY_FORMAT_VERSION),
 			true
 		)
 		linoriaLabels.MetadataMap = metadataGroup:AddLabel(
-			"РљР°СЂС‚Р°: "
+			"Карта: "
 				.. tostring(getValue(info, "Map") or "Unknown"),
 			true
 		)
 		linoriaLabels.MetadataMode = metadataGroup:AddLabel(
-			"Р РµР¶РёРј: "
+			"Режим: "
 				.. tostring(getValue(info, "Mode") or "Unknown"),
 			true
 		)
 		linoriaLabels.MetadataDeck =
-			metadataGroup:AddLabel("РљРѕР»РѕРґР°: Р·Р°РіСЂСѓР·РєР°...", true)
+			metadataGroup:AddLabel("Колода: загрузка...", true)
 
 		local inspectorGroup =
-			tabs.Inspector:AddLeftGroupbox("Р’С‹Р±СЂР°РЅРЅС‹Р№ СЋРЅРёС‚")
+			tabs.Inspector:AddLeftGroupbox("Выбранный юнит")
 
 		linoriaLabels.InspectorName =
-			inspectorGroup:AddLabel("Р®РЅРёС‚: РЅРµ РІС‹Р±СЂР°РЅ", true)
+			inspectorGroup:AddLabel("Юнит: не выбран", true)
 		linoriaLabels.InspectorId =
-			inspectorGroup:AddLabel("ID: вЂ”", true)
+			inspectorGroup:AddLabel("ID: —", true)
 		linoriaLabels.InspectorLevel =
-			inspectorGroup:AddLabel("РЈСЂРѕРІРµРЅСЊ: вЂ”", true)
+			inspectorGroup:AddLabel("Уровень: —", true)
 		linoriaLabels.InspectorTarget =
-			inspectorGroup:AddLabel("Target Mode: вЂ”", true)
+			inspectorGroup:AddLabel("Target Mode: —", true)
 		linoriaLabels.InspectorPosition =
-			inspectorGroup:AddLabel("РљРѕРѕСЂРґРёРЅР°С‚С‹: вЂ”", true)
+			inspectorGroup:AddLabel("Координаты: —", true)
 		linoriaLabels.InspectorSpent =
-			inspectorGroup:AddLabel("РџРѕС‚СЂР°С‡РµРЅРѕ: вЂ”", true)
+			inspectorGroup:AddLabel("Потрачено: —", true)
 		linoriaLabels.InspectorAction =
-			inspectorGroup:AddLabel("РЎС‚СЂРѕРєР° Strat.txt: вЂ”", true)
+			inspectorGroup:AddLabel("Строка Strat.txt: —", true)
 
 		inspectorGroup:AddButton({
-			Text = "РћС‡РёСЃС‚РёС‚СЊ РІС‹Р±РѕСЂ",
+			Text = "Очистить выбор",
 			Func = clearInspectorSelection,
 		})
 
 		local inspectorHelp =
-			tabs.Inspector:AddRightGroupbox("РљР°Рє РёСЃРїРѕР»СЊР·РѕРІР°С‚СЊ")
+			tabs.Inspector:AddRightGroupbox("Как использовать")
 
 		inspectorHelp:AddLabel(
-			"Р—Р°РєСЂРѕР№ РѕРєРЅРѕ РёР»Рё РЅР°РІРµРґРё РєР°РјРµСЂСѓ РЅР° СЃРІРѕРµРіРѕ СЋРЅРёС‚Р° "
-				.. "Рё РЅР°Р¶РјРё Р›РљРњ. Р’С‹Р±СЂР°РЅРЅР°СЏ Р±Р°С€РЅСЏ РїРѕРґСЃРІРµС‚РёС‚СЃСЏ.",
+			"Закрой окно или наведи камеру на своего юнита "
+				.. "и нажми ЛКМ. Выбранная башня подсветится.",
 			true
 		)
 
 		local automation =
-			tabs.Misc:AddLeftGroupbox("РђРІС‚РѕРјР°С‚РёР·Р°С†РёСЏ")
+			tabs.Misc:AddLeftGroupbox("Автоматизация")
 
 		linoriaToggles.AutoReplay =
 			automation:AddToggle("HH_AutoReplay", {
@@ -5990,7 +5992,7 @@ local function initializeLinoriaUi()
 			})
 
 		local debugGroup =
-			tabs.Logs:AddLeftGroupbox("РџРѕСЃР»РµРґРЅРµРµ СЃРѕР±С‹С‚РёРµ")
+			tabs.Logs:AddLeftGroupbox("Последнее событие")
 
 		linoriaLabels.Debug =
 			debugGroup:AddLabel(
@@ -6010,11 +6012,11 @@ local function initializeLinoriaUi()
 			debugGroup:AddLabel(
 				hasFailureReport
 					and (
-						"Failure Report: РЅР°Р№РґРµРЅ "
+						"Failure Report: найден "
 						.. ERROR_LOG_FILE_NAME
 					)
 					or (
-						"Failure Report: РіРѕС‚РѕРІ вЂў "
+						"Failure Report: готов • "
 						.. ERROR_LOG_FILE_NAME
 					),
 				true
@@ -6063,7 +6065,7 @@ local function initializeLinoriaUi()
 			end)
 		else
 			menuGroup:AddLabel(
-				"Theme/Save addons РЅРµРґРѕСЃС‚СѓРїРЅС‹; РѕСЃРЅРѕРІРЅС‹Рµ С„СѓРЅРєС†РёРё СЂР°Р±РѕС‚Р°СЋС‚.",
+				"Theme/Save addons недоступны; основные функции работают.",
 				true
 			)
 		end
@@ -6189,7 +6191,7 @@ end)
 
 
 setDebug(
-	"Р“РѕС‚РѕРІРѕ",
-	"Hub Р·Р°РіСЂСѓР¶РµРЅ. РђРІС‚РѕРІС…РѕРґРѕРј СѓРїСЂР°РІР»СЏРµС‚ РєР°СЂС‚Р° Рё СЃР»РѕР¶РЅРѕСЃС‚СЊ РёР· Strat.",
+	"Готово",
+	"Hub загружен. Автовходом управляет карта и сложность из Strat.",
 	"success"
 )
