@@ -21,7 +21,13 @@ local SNAPSHOT_KEY = "HamsterHub_ProfileSnapshot_V5"
 local STRATEGY_FILE_NAME = "Strat.txt"
 local AUTOSAVE_FILE_NAME = "Strat_Autosave.txt"
 local ERROR_LOG_FILE_NAME = "Strategy_Error_Log.txt"
-local STRATEGY_FORMAT_VERSION = 6
+local STRATEGY_FORMAT_VERSION = 7
+local EXECUTOR_ROOT = "HamsterHub"
+local EXECUTOR_PROJECT = EXECUTOR_ROOT .. "/ModernRebornTTD2"
+local STRATEGY_PATH = EXECUTOR_PROJECT .. "/strat.txt"
+local AUTOSAVE_PATH = EXECUTOR_PROJECT .. "/strat_autosave.txt"
+local ERROR_LOG_PATH = EXECUTOR_PROJECT .. "/Strategy_Error_Log.txt"
+local SETTINGS_PATH = EXECUTOR_PROJECT .. "/settings.json"
 local VIP_SERVER_URL =
 	"https://www.roblox.com/share?code=4396b9eeb786af4d9b28fc463d91a82c&type=Server"
 local VIP_SHARE_CODE = "4396b9eeb786af4d9b28fc463d91a82c"
@@ -29,8 +35,7 @@ local VIP_SERVER_DEEPLINK =
 	"roblox://navigation/share_links?code="
 		.. VIP_SHARE_CODE
 		.. "&type=Server"
-local LINORIA_REPOSITORY =
-	"https://raw.githubusercontent.com/violin-suzutsuki/LinoriaLib/main/"
+local RAYFIELD_URL = "https://sirius.menu/rayfield"
 local TOWER_MATCH_DISTANCE = 1.25
 local UPGRADE_MATCH_WINDOW = 2
 
@@ -47,6 +52,7 @@ local profileSnapshot = {
 	Gems = "—",
 	Deck = {},
 	Settings = {
+		AutoTeleport = true,
 		AutoReplay = false,
 		AutoBackToLobby = false,
 		AutoVipAfterGame = false,
@@ -72,9 +78,55 @@ end
 
 local savedSnapshotLoaded = false
 local lastSnapshotJson = ""
-local linoriaLibrary = nil
-local linoriaLabels = {}
-local linoriaToggles = {}
+local rayfieldLibrary = nil
+local rayfieldLabels = {}
+local rayfieldToggles = {}
+local autoTeleportEnabled = true
+local autoReplayEnabled = false
+local autoBackToLobbyEnabled = false
+local autoVipAfterGameEnabled = false
+local autoSkipEnabled = false
+local autoX2SpeedEnabled = false
+
+local function ensureExecutorFolders()
+	if typeof(makefolder) ~= "function" then
+		return false
+	end
+
+	pcall(makefolder, EXECUTOR_ROOT)
+	pcall(makefolder, EXECUTOR_PROJECT)
+	return true
+end
+
+local function executorFileExists(path)
+	if typeof(isfile) ~= "function" then
+		return false
+	end
+
+	local success, result = pcall(isfile, path)
+	return success and result == true
+end
+
+local function executorWrite(path, content)
+	if typeof(writefile) ~= "function" then
+		return false, "writefile is unavailable"
+	end
+
+	ensureExecutorFolders()
+	local success, err = pcall(writefile, path, content)
+	return success, err
+end
+
+local function executorRead(path)
+	if typeof(readfile) ~= "function" or not executorFileExists(path) then
+		return nil
+	end
+
+	local success, content = pcall(readfile, path)
+	return success and content or nil
+end
+
+ensureExecutorFolders()
 
 
 local function loadSavedSnapshot()
@@ -103,6 +155,8 @@ local function loadSavedSnapshot()
 	end
 
 	if typeof(decoded.Settings) == "table" then
+		profileSnapshot.Settings.AutoTeleport =
+			decoded.Settings.AutoTeleport ~= false
 		profileSnapshot.Settings.AutoReplay =
 			decoded.Settings.AutoReplay == true
 
@@ -157,6 +211,27 @@ local function loadSavedSnapshot()
 					Image = tostring(savedSlot.Image or ""),
 					Name = tostring(savedSlot.Name or ""),
 				}
+			end
+		end
+	end
+
+	local externalSettings = executorRead(SETTINGS_PATH)
+	if externalSettings then
+		local settingsOk, settingsData = pcall(function()
+			return HttpService:JSONDecode(externalSettings)
+		end)
+		if settingsOk and typeof(settingsData) == "table" then
+			for _, key in ipairs({
+				"AutoTeleport",
+				"AutoReplay",
+				"AutoBackToLobby",
+				"AutoVipAfterGame",
+				"AutoSkip",
+				"AutoX2Speed",
+			}) do
+				if settingsData[key] ~= nil then
+					profileSnapshot.Settings[key] = settingsData[key] == true
+				end
 			end
 		end
 	end
@@ -260,7 +335,7 @@ local title = Instance.new("TextLabel")
 title.Position = UDim2.fromOffset(29, 0)
 title.Size = UDim2.new(1, -45, 1, 0)
 title.BackgroundTransparency = 1
-title.Text = "HAMSTER HUB"
+title.Text = "Hamster Hub 🐹🔥"
 title.TextColor3 = Color3.fromRGB(245, 245, 247)
 title.TextSize = 17
 title.Font = Enum.Font.GothamBold
@@ -303,7 +378,7 @@ local debugTitle = Instance.new("TextLabel")
 debugTitle.Position = UDim2.fromOffset(31, 5)
 debugTitle.Size = UDim2.new(1, -42, 0, 23)
 debugTitle.BackgroundTransparency = 1
-debugTitle.Text = "ЗАПУСК"
+debugTitle.Text = "STARTUP"
 debugTitle.TextColor3 = Color3.fromRGB(232, 233, 236)
 debugTitle.TextSize = 11
 debugTitle.Font = Enum.Font.GothamBold
@@ -315,7 +390,7 @@ local debugText = Instance.new("TextLabel")
 debugText.Position = UDim2.fromOffset(13, 27)
 debugText.Size = UDim2.new(1, -26, 0, 22)
 debugText.BackgroundTransparency = 1
-debugText.Text = "Инициализация..."
+debugText.Text = "Initializing..."
 debugText.TextColor3 = Color3.fromRGB(151, 155, 165)
 debugText.TextSize = 10
 debugText.Font = Enum.Font.Gotham
@@ -326,11 +401,15 @@ debugText.ZIndex = 4
 debugText.Parent = debugPanel
 
 local function updateLinoriaLabel(labelName, text)
-	local label = linoriaLabels[labelName]
+	local label = linoriaLabels[labelName] or rayfieldLabels[labelName]
 
 	if label and typeof(label.SetText) == "function" then
 		pcall(function()
 			label:SetText(tostring(text))
+		end)
+	elseif label and typeof(label.Set) == "function" then
+		pcall(function()
+			label:Set(tostring(text))
 		end)
 	end
 end
@@ -384,13 +463,6 @@ local function appendFailureReport(message, context)
 		"PrivateServerId: " .. tostring(game.PrivateServerId),
 		"Map: " .. tostring(infoValue("Map") or "Unknown"),
 		"Mode: " .. tostring(infoValue("Mode") or "Unknown"),
-		"Difficulty: "
-			.. tostring(
-				infoValue("Difficulty")
-					or infoValue("DifficultyName")
-					or infoValue("DifficultyMode")
-					or "Unknown"
-			),
 		"Wave: " .. tostring(infoValue("Wave") or 0),
 		"Timing: " .. tostring(infoValue("Time") or "Unknown"),
 	}
@@ -439,7 +511,7 @@ local function appendFailureReport(message, context)
 
 	if typeof(appendfile) == "function" then
 		success = pcall(function()
-			appendfile(ERROR_LOG_FILE_NAME, entry)
+			appendfile(ERROR_LOG_PATH, entry)
 		end)
 	else
 		success = pcall(function()
@@ -447,11 +519,11 @@ local function appendFailureReport(message, context)
 
 			if typeof(isfile) == "function"
 				and typeof(readfile) == "function"
-				and isfile(ERROR_LOG_FILE_NAME) then
-				previous = readfile(ERROR_LOG_FILE_NAME)
+				and isfile(ERROR_LOG_PATH) then
+				previous = readfile(ERROR_LOG_PATH)
 			end
 
-			writefile(ERROR_LOG_FILE_NAME, previous .. entry)
+			writefile(ERROR_LOG_PATH, previous .. entry)
 		end)
 	end
 
@@ -459,7 +531,7 @@ local function appendFailureReport(message, context)
 		updateLinoriaLabel(
 			"FailureReport",
 			"Failure Report: записан в "
-				.. ERROR_LOG_FILE_NAME
+				.. ERROR_LOG_PATH
 		)
 	end
 
@@ -541,7 +613,7 @@ local deckTitle = Instance.new("TextLabel")
 deckTitle.Position = UDim2.fromOffset(16, 122)
 deckTitle.Size = UDim2.new(1, -32, 0, 18)
 deckTitle.BackgroundTransparency = 1
-deckTitle.Text = "ТЕКУЩАЯ КОЛОДА"
+deckTitle.Text = "CURRENT LOADOUT"
 deckTitle.TextColor3 = Color3.fromRGB(151, 155, 165)
 deckTitle.TextSize = 10
 deckTitle.Font = Enum.Font.GothamBold
@@ -691,9 +763,9 @@ local function createBalanceLabel(name, prefix, layoutOrder)
 	return label
 end
 
-local gameBalanceLabel = createBalanceLabel("GameBalance", "$ В ИГРЕ:", 1)
-local coinsLabel = createBalanceLabel("Coins", "МОНЕТЫ:", 2)
-local gemsLabel = createBalanceLabel("Gems", "ГЕМЫ:", 3)
+local gameBalanceLabel = createBalanceLabel("GameBalance", "IN-GAME CASH:", 1)
+local coinsLabel = createBalanceLabel("Coins", "COINS:", 2)
+local gemsLabel = createBalanceLabel("Gems", "GEMS:", 3)
 
 
 local function createSectionTitle(text, y)
@@ -760,7 +832,7 @@ recorderStatus.Name = "RecorderStatus"
 recorderStatus.Position = UDim2.fromOffset(16, 335)
 recorderStatus.Size = UDim2.new(1, -32, 0, 18)
 recorderStatus.BackgroundTransparency = 1
-recorderStatus.Text = "Остановлен • действий: 0"
+	recorderStatus.Text = "Stopped • actions: 0"
 recorderStatus.TextColor3 = Color3.fromRGB(151, 155, 165)
 recorderStatus.TextSize = 10
 recorderStatus.Font = Enum.Font.Gotham
@@ -1235,22 +1307,22 @@ local function renderProfile()
 			if unitName ~= "" then
 				card.Name.Text = unitName
 			elseif image ~= "" then
-				card.Name.Text = "Юнит"
+				card.Name.Text = "Unit"
 			else
-				card.Name.Text = "Пусто"
+				card.Name.Text = "Empty"
 			end
 		end
 	end
 
-	coinsLabel.Text = "МОНЕТЫ: " .. tostring(
+	coinsLabel.Text = "COINS: " .. tostring(
 		profileSnapshot.Coins or "—"
 	)
 
-	gemsLabel.Text = "ГЕМЫ: " .. tostring(
+	gemsLabel.Text = "GEMS: " .. tostring(
 		profileSnapshot.Gems or "—"
 	)
 
-	gameBalanceLabel.Text = "$ В ИГРЕ: "
+	gameBalanceLabel.Text = "IN-GAME CASH: "
 		.. getCurrentGameBalance()
 
 	local info = workspace:FindFirstChild("Info")
@@ -1271,16 +1343,6 @@ local function renderProfile()
 	updateLinoriaLabel(
 		"MetadataMode",
 		"Режим: " .. tostring(readInfoValue("Mode") or "Unknown")
-	)
-	updateLinoriaLabel(
-		"MetadataDifficulty",
-		"Сложность: "
-			.. tostring(
-				readInfoValue("Difficulty")
-					or readInfoValue("DifficultyName")
-					or readInfoValue("DifficultyMode")
-					or "Unknown"
-			)
 	)
 	updateLinoriaLabel(
 		"MetadataDeck",
@@ -1343,19 +1405,21 @@ for _, groupName in ipairs(ACTION_GROUP_ORDER) do
 		profileSnapshot.Settings.EnabledGroups[groupName] ~= false
 end
 
-local autoReplayEnabled =
+autoReplayEnabled =
 	profileSnapshot.Settings.AutoReplay == true
+autoTeleportEnabled =
+	profileSnapshot.Settings.AutoTeleport ~= false
 
-local autoBackToLobbyEnabled =
+autoBackToLobbyEnabled =
 	profileSnapshot.Settings.AutoBackToLobby == true
 
-local autoVipAfterGameEnabled =
+autoVipAfterGameEnabled =
 	profileSnapshot.Settings.AutoVipAfterGame == true
 
-local autoSkipEnabled =
+autoSkipEnabled =
 	profileSnapshot.Settings.AutoSkip == true
 
-local autoX2SpeedEnabled =
+autoX2SpeedEnabled =
 	profileSnapshot.Settings.AutoX2Speed == true
 
 local function roundNumber(value, digits)
@@ -1547,7 +1611,7 @@ local function updateRecorderStatus()
 	local statusText
 
 	if recording then
-		statusText = "Запись идёт • действий: "
+		statusText = "Recording • actions: "
 			.. tostring(#recordedActions)
 
 		recorderStatus.Text = statusText
@@ -1558,7 +1622,7 @@ local function updateRecorderStatus()
 		stopRecordingButton.BackgroundColor3 =
 			Color3.fromRGB(92, 43, 43)
 	else
-		statusText = "Остановлен • действий: "
+		statusText = "Stopped • actions: "
 			.. tostring(#recordedActions)
 
 		recorderStatus.Text = statusText
@@ -1625,6 +1689,24 @@ local function renderMiscSettings()
 		autoVipAfterGameEnabled,
 		"AUTO VIP AFTER GAME"
 	)
+end
+
+local function saveExecutorSettings()
+	local success, encoded = pcall(function()
+		return HttpService:JSONEncode({
+			AutoTeleport = autoTeleportEnabled,
+			AutoReplay = autoReplayEnabled,
+			AutoBackToLobby = autoBackToLobbyEnabled,
+			AutoVipAfterGame = autoVipAfterGameEnabled,
+			AutoSkip = autoSkipEnabled,
+			AutoX2Speed = autoX2SpeedEnabled,
+			UpdatedAt = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+		})
+	end)
+
+	if success then
+		executorWrite(SETTINGS_PATH, encoded)
+	end
 end
 
 local function rememberCurrentTowers()
@@ -1722,19 +1804,10 @@ local function startHamsterStrategyPlayer()
 			"PrivateServerId: " .. tostring(game.PrivateServerId),
 			"StrategyMap: " .. tostring(STRATEGY.Map or "Unknown"),
 			"StrategyMode: " .. tostring(STRATEGY.Mode or "Unknown"),
-			"StrategyDifficulty: "
-				.. tostring(STRATEGY.Difficulty or "Unknown"),
 			"CurrentMap: "
 				.. tostring(infoValue("Map") or "Unknown"),
 			"CurrentMode: "
 				.. tostring(infoValue("Mode") or "Unknown"),
-			"CurrentDifficulty: "
-				.. tostring(
-					infoValue("Difficulty")
-						or infoValue("DifficultyName")
-						or infoValue("DifficultyMode")
-						or "Unknown"
-				),
 			"CurrentWave: " .. tostring(infoValue("Wave") or 0),
 			"CurrentTiming: "
 				.. tostring(infoValue("Time") or "Unknown"),
@@ -1787,7 +1860,7 @@ local function startHamsterStrategyPlayer()
 
 		if typeof(appendfile) == "function" then
 			success = pcall(function()
-				appendfile("Strategy_Error_Log.txt", entry)
+				appendfile("HamsterHub/ModernRebornTTD2/Strategy_Error_Log.txt", entry)
 			end)
 		else
 			success = pcall(function()
@@ -1795,12 +1868,12 @@ local function startHamsterStrategyPlayer()
 
 				if typeof(isfile) == "function"
 					and typeof(readfile) == "function"
-					and isfile("Strategy_Error_Log.txt") then
-					previous = readfile("Strategy_Error_Log.txt")
+					and isfile("HamsterHub/ModernRebornTTD2/Strategy_Error_Log.txt") then
+					previous = readfile("HamsterHub/ModernRebornTTD2/Strategy_Error_Log.txt")
 				end
 
 				writefile(
-					"Strategy_Error_Log.txt",
+					"HamsterHub/ModernRebornTTD2/Strategy_Error_Log.txt",
 					previous .. entry
 				)
 			end)
@@ -1911,7 +1984,7 @@ local function startHamsterStrategyPlayer()
 	overlayLabel.BackgroundColor3 = Color3.fromRGB(18, 18, 22)
 	overlayLabel.BackgroundTransparency = 0.12
 	overlayLabel.BorderSizePixel = 0
-	overlayLabel.Text = "Strategy Player: ожидание матча..."
+	overlayLabel.Text = "Strategy Player: waiting for a match..."
 	overlayLabel.TextColor3 = Color3.fromRGB(240, 240, 243)
 	overlayLabel.TextSize = 14
 	overlayLabel.Font = Enum.Font.GothamBold
@@ -1945,7 +2018,7 @@ local function startHamsterStrategyPlayer()
 		if action.Type == "Speed" then
 			suffix = " x" .. tostring(action.Speed or "?")
 		elseif action.Type == "Skip" then
-			suffix = " волна " .. tostring(action.Wave or "?")
+			suffix = " wave " .. tostring(action.Wave or "?")
 		elseif action.Type == "Target" then
 			suffix = suffix
 				.. " → "
@@ -1962,7 +2035,7 @@ local function startHamsterStrategyPlayer()
 		statusText
 	)
 		if not action then
-			overlayLabel.Text = "Strategy Player: действий больше нет."
+			overlayLabel.Text = "Strategy Player: no more actions."
 			return
 		end
 
@@ -1970,11 +2043,11 @@ local function startHamsterStrategyPlayer()
 
 		if (tonumber(remaining) or 0) > 0.05 then
 			prefix = string.format(
-				"Через %.1f сек: ",
+				"In %.1f sec: ",
 				math.max(0, tonumber(remaining) or 0)
 			)
 		else
-			prefix = "Готовлю: "
+			prefix = "Preparing: "
 		end
 
 		local text = prefix
@@ -2011,8 +2084,62 @@ local function startHamsterStrategyPlayer()
 			or groups[groupName] ~= false
 	end
 
+	local VALID_MODES = {
+		EasyMode = true,
+		MediumMode = true,
+		HardMode = true,
+		NightmareMode = true,
+		CrazyMode = true,
+		BossRushMode = true,
+	}
+
+	local function validateStrategy()
+		if type(STRATEGY.Map) ~= "string"
+			or STRATEGY.Map:gsub("%s+", "") == "" then
+			return false, "Strategy Map is missing."
+		end
+
+		if type(STRATEGY.Mode) ~= "string"
+			or not VALID_MODES[STRATEGY.Mode] then
+			return false,
+				"Unsupported Mode. Use EasyMode, MediumMode, HardMode, "
+					.. "NightmareMode, CrazyMode, or BossRushMode."
+		end
+
+		if type(STRATEGY.Actions) ~= "table" then
+			return false, "Strategy Actions must be a table."
+		end
+
+		if type(STRATEGY.Loadout) ~= "table"
+			and type(STRATEGY.Deck) ~= "table" then
+			return false, "Strategy Loadout is missing."
+		end
+
+		for index, action in ipairs(STRATEGY.Actions) do
+			if type(action) ~= "table"
+				or type(action.Type) ~= "string"
+				or action.Type == "" then
+				return false,
+					"Invalid action format at index #" .. tostring(index) .. "."
+			end
+
+			if action.Type == "Place"
+				and type(action.Unit or action.Template) ~= "string" then
+				return false,
+					"Place action #" .. tostring(index) .. " has no unit name."
+			end
+		end
+
+		return true
+	end
+
 
 	local function runLobbyAutomation()
+		if STRATEGY.AutoTeleport == false then
+			log("Auto Teleport is disabled.")
+			return true
+		end
+
 		local lobby = workspace:WaitForChild("LOBBY_", 30)
 
 		if not lobby then
@@ -2230,8 +2357,7 @@ local function startHamsterStrategyPlayer()
 				"В стратегии не указана конкретная Map."
 		end
 
-		local maxPlayers =
-			tonumber(STRATEGY.MaxElevatorPlayers) or 2
+		local maxPlayers = 1
 
 		local character =
 			player.Character or player.CharacterAdded:Wait()
@@ -2262,7 +2388,7 @@ local function startHamsterStrategyPlayer()
 					if floor
 						and normalized(currentMap)
 							== normalized(desiredMap)
-						and count < maxPlayers then
+						and count == 0 then
 						table.insert(candidates, {
 							Elevator = elevator,
 							Floor = floor,
@@ -2357,12 +2483,6 @@ local function startHamsterStrategyPlayer()
 		end
 
 		local desiredMode = validChoice(STRATEGY.Mode)
-		local desiredDifficulty = nil
-
-		if STRATEGY.AutoSelectDifficulty ~= false then
-			desiredDifficulty =
-				validChoice(STRATEGY.Difficulty)
-		end
 
 		local function findRemote(names)
 			for _, name in ipairs(names) do
@@ -2424,10 +2544,7 @@ local function startHamsterStrategyPlayer()
 
 		local selectionStartedAt = os.clock()
 		local lastModeRequest = 0
-		local lastDifficultyRequest = 0
 		local modeConfirmed = desiredMode == nil
-		local difficultyConfirmed =
-			desiredDifficulty == nil
 
 		repeat
 			if desiredMode and not modeConfirmed then
@@ -2465,50 +2582,7 @@ local function startHamsterStrategyPlayer()
 				end
 			end
 
-			if desiredDifficulty
-				and not difficultyConfirmed then
-				local currentDifficulty =
-					currentSelection({
-						"Difficulty",
-						"DifficultyName",
-						"DifficultyMode",
-						"SelectedDifficulty",
-					})
-
-				if normalized(currentDifficulty)
-					== normalized(desiredDifficulty) then
-					difficultyConfirmed = true
-					log(
-						"Сложность выбрана: "
-							.. desiredDifficulty
-							.. "."
-					)
-				elseif os.clock()
-					- lastDifficultyRequest >= 0.75 then
-					lastDifficultyRequest = os.clock()
-
-					local difficultyRemote = findRemote({
-						"VoteForDifficulty",
-						"VoteDifficulty",
-						"SelectDifficulty",
-						"SetDifficulty",
-						"DifficultyVote",
-					})
-
-					if sendRemote(
-						difficultyRemote,
-						desiredDifficulty
-					) then
-						log(
-							"Отправляю выбор сложности "
-								.. desiredDifficulty
-								.. "."
-						)
-					end
-				end
-			end
-
-			if modeConfirmed and difficultyConfirmed then
+			if modeConfirmed then
 				break
 			end
 
@@ -2528,24 +2602,79 @@ local function startHamsterStrategyPlayer()
 			)
 		end
 
-		if desiredDifficulty
-			and not difficultyConfirmed then
-			fail(
-				"Не удалось подтвердить сложность "
-					.. desiredDifficulty
-					.. " до запуска матча."
-			)
-		end
-
 		return true
 	end
 
 	local lobbyPresent =
 		workspace:FindFirstChild("LOBBY_") ~= nil
 
+	local strategyValid, strategyError = validateStrategy()
+	if not strategyValid then
+		fail(strategyError, nil, nil, "Strategy Validator")
+		environment.HamsterStrategyPlayerRunning = false
+		return
+	end
+
+	local function applySavedLoadout()
+		local loadout = STRATEGY.Loadout or STRATEGY.Deck
+		if type(loadout) ~= "table" then
+			return false, "Strategy Loadout is missing."
+		end
+
+		local events = ReplicatedStorage:FindFirstChild("Events")
+		local functions = ReplicatedStorage:FindFirstChild("Functions")
+		local remote
+		for _, container in ipairs({events, functions}) do
+			if container then
+				for _, name in ipairs({
+					"LoadLoadout",
+					"SetLoadout",
+					"EquipLoadout",
+					"ApplyLoadout",
+					"ChangeLoadout",
+				}) do
+					local candidate = container:FindFirstChild(name, true)
+					if candidate
+						and (candidate:IsA("RemoteEvent")
+							or candidate:IsA("RemoteFunction")) then
+						remote = candidate
+						break
+					end
+				end
+			end
+			if remote then
+				break
+			end
+		end
+
+		if remote then
+			local sent = pcall(function()
+				if remote:IsA("RemoteEvent") then
+					remote:FireServer(loadout)
+				else
+					remote:InvokeServer(loadout)
+				end
+			end)
+			if not sent then
+				return false, "The saved Loadout could not be applied."
+			end
+			log("Saved Loadout applied.")
+		else
+			log("No loadout remote was exposed; keeping the current Loadout.")
+		end
+		return true
+	end
+
 	if lobbyPresent then
 		if STRATEGY.AutoEnterMatch == false then
 			fail("Автовход на карту отключён в стратегии.")
+			environment.HamsterStrategyPlayerRunning = false
+			return
+		end
+
+		local loadoutApplied, loadoutError = applySavedLoadout()
+		if not loadoutApplied then
+			fail(loadoutError, nil, nil, "Loadout")
 			environment.HamsterStrategyPlayerRunning = false
 			return
 		end
@@ -2606,12 +2735,12 @@ local function startHamsterStrategyPlayer()
 		return
 	end
 
-	local MAX_RETRIES = 20
+	local MAX_RETRIES = 3
 	local RETRY_DELAY = 0.35
 	local ACTION_COOLDOWN = 0.1
 	local POSITION_TOLERANCE = 1.5
 	local SPAWN_CONFIRM_TIMEOUT = 3.5
-	local SUPPORTED_FORMAT_VERSION = 6
+	local SUPPORTED_FORMAT_VERSION = 7
 	local towerRegistry = {}
 	local towerUnitIds = {}
 
@@ -2678,13 +2807,6 @@ local function startHamsterStrategyPlayer()
 
 	local function startMatchSelection()
 		local desiredMode = normalizedChoice(STRATEGY.Mode)
-		local desiredDifficulty = nil
-
-		if STRATEGY.AutoSelectDifficulty ~= false then
-			desiredDifficulty = normalizedChoice(
-				STRATEGY.Difficulty
-			)
-		end
 
 		local modeRemote = findSelectionRemote({
 			"VoteForMap",
@@ -2693,22 +2815,12 @@ local function startHamsterStrategyPlayer()
 			"SetMode",
 		})
 
-		local difficultyRemote = findSelectionRemote({
-			"VoteForDifficulty",
-			"VoteDifficulty",
-			"SelectDifficulty",
-			"SetDifficulty",
-			"DifficultyVote",
-		})
-
-		if not desiredMode and not desiredDifficulty then
+		if not desiredMode then
 			return
 		end
 
 		task.spawn(function()
 			local lastModeVoteAt = 0
-			local lastDifficultyVoteAt = 0
-			local missingDifficultyWarned = false
 
 			while info.Parent and not isGameActive() do
 				local voting = readValue(info, "Voting") == true
@@ -2718,13 +2830,6 @@ local function startHamsterStrategyPlayer()
 						readValue(info, "Mode") or ""
 					)
 
-					local currentDifficulty = tostring(
-						readValue(info, "Difficulty")
-							or readValue(info, "DifficultyName")
-							or readValue(info, "DifficultyMode")
-							or ""
-					)
-
 					if desiredMode
 						and currentMode ~= desiredMode
 						and os.clock() - lastModeVoteAt >= 1 then
@@ -2732,25 +2837,6 @@ local function startHamsterStrategyPlayer()
 						sendSelection(modeRemote, desiredMode)
 					end
 
-					if desiredDifficulty
-						and currentDifficulty ~= desiredDifficulty
-						and os.clock() - lastDifficultyVoteAt >= 1 then
-						lastDifficultyVoteAt = os.clock()
-
-						if difficultyRemote then
-							sendSelection(
-								difficultyRemote,
-								desiredDifficulty
-							)
-						elseif not missingDifficultyWarned then
-							missingDifficultyWarned = true
-							fail(
-								"Remote выбора сложности не найден. "
-									.. "Добавь VoteForDifficulty, "
-									.. "SelectDifficulty или SetDifficulty."
-							)
-						end
-					end
 				end
 
 				task.wait(0.2)
@@ -2822,13 +2908,6 @@ local function startHamsterStrategyPlayer()
 			readValue(info, "Mode") or ""
 		)
 
-		local difficultyName = tostring(
-			readValue(info, "Difficulty")
-				or readValue(info, "DifficultyName")
-				or readValue(info, "DifficultyMode")
-				or ""
-		)
-
 		if STRATEGY.Map
 			and STRATEGY.Map ~= "Unknown"
 			and mapName ~= STRATEGY.Map then
@@ -2847,18 +2926,6 @@ local function startHamsterStrategyPlayer()
 					.. STRATEGY.Mode
 					.. ", сейчас "
 					.. modeName
-		end
-
-		if STRATEGY.Difficulty
-			and STRATEGY.Difficulty ~= "Unknown"
-			and STRATEGY.Difficulty ~= "Any"
-			and difficultyName ~= ""
-			and difficultyName ~= STRATEGY.Difficulty then
-			return false,
-				"Сложность не совпадает. Нужна "
-					.. STRATEGY.Difficulty
-					.. ", сейчас "
-					.. difficultyName
 		end
 
 		local success, data = pcall(function()
@@ -3985,35 +4052,6 @@ local function serializeStrategy()
 	local info = workspace:FindFirstChild("Info")
 	local mapName = tostring(getValue(info, "Map") or "Unknown")
 	local modeName = tostring(getValue(info, "Mode") or "Unknown")
-	local rawDifficulty = getValue(info, "Difficulty")
-		or getValue(info, "DifficultyName")
-		or getValue(info, "DifficultyMode")
-
-	if rawDifficulty == nil then
-		for _, descendant in ipairs(playerGui:GetDescendants()) do
-			if descendant:IsA("TextLabel")
-				or descendant:IsA("TextButton") then
-				local lowerName = string.lower(descendant.Name)
-
-				if string.find(lowerName, "difficulty")
-					or string.find(lowerName, "selecteddifficulty") then
-					local textValue = tostring(descendant.Text or "")
-
-					if textValue ~= ""
-						and string.lower(textValue) ~= "difficulty" then
-						rawDifficulty = textValue
-						break
-					end
-				end
-			end
-		end
-	end
-
-	local difficultyName = tostring(rawDifficulty or "Any")
-
-	if difficultyName == "" or difficultyName == "Unknown" then
-		difficultyName = "Any"
-	end
 	local duration = recordingStartedAt > 0
 		and math.max(0, os.clock() - recordingStartedAt)
 		or 0
@@ -4041,12 +4079,11 @@ local function serializeStrategy()
 		"\tPlaceId = " .. tostring(game.PlaceId) .. ",",
 		"\tMap = " .. string.format("%q", mapName) .. ",",
 		"\tMode = " .. string.format("%q", modeName) .. ",",
-		"\tDifficulty = "
-			.. string.format("%q", difficultyName)
-			.. ",",
 		"\tAutoEnterMatch = true,",
-		"\tAutoSelectDifficulty = true,",
-		"\tMaxElevatorPlayers = 2,",
+		"\tAutoTeleport = "
+			.. tostring(autoTeleportEnabled)
+			.. ",",
+		"\tMaxElevatorPlayers = 1,",
 		"\tElevatorSearchTimeout = 90,",
 		"\tElevatorEnterTimeout = 6,",
 		"\tLobbySelectionTimeout = 30,",
@@ -4098,9 +4135,6 @@ local function serializeStrategy()
 		"\t\tPlaceId = " .. tostring(game.PlaceId) .. ",",
 		"\t\tMap = " .. string.format("%q", mapName) .. ",",
 		"\t\tMode = " .. string.format("%q", modeName) .. ",",
-		"\t\tDifficulty = "
-			.. string.format("%q", difficultyName)
-			.. ",",
 		"\t\tExecutionRule = \"TimeAndMoney\",",
 		"\t\tAutoEnterMatch = true,",
 		"\t\tUnitBinding = \"SpawnedInstanceByUnitId\",",
@@ -4116,6 +4150,16 @@ local function serializeStrategy()
 	end
 
 	table.insert(lines, "\t\t},")
+	table.insert(lines, "\t},")
+	table.insert(lines, "\tLoadout = {")
+
+	for _, unitName in ipairs(deckNames) do
+		table.insert(
+			lines,
+			"\t\t" .. string.format("%q", unitName) .. ","
+		)
+	end
+
 	table.insert(lines, "\t},")
 	table.insert(lines, "\tDeck = {")
 
@@ -4281,15 +4325,14 @@ saveAutosave = function()
 		autosavePending = false
 
 		local content = serializeStrategy()
-		local success = pcall(function()
-			writefile(AUTOSAVE_FILE_NAME, content)
-		end)
+		local success, writeError = executorWrite(AUTOSAVE_PATH, content)
 
 		if not success then
 			autosaveWriting = false
 			setDebug(
-				"Autosave",
-				"Не удалось обновить Strat_Autosave.txt.",
+			"Autosave",
+				"Could not update the strategy autosave: "
+					.. tostring(writeError),
 				"error"
 			)
 			return false
@@ -4301,7 +4344,7 @@ saveAutosave = function()
 	autosaveWriting = false
 	updateLinoriaLabel(
 		"Autosave",
-		"Autosave: Strat_Autosave.txt • "
+		"Autosave: " .. AUTOSAVE_PATH .. " • "
 			.. tostring(#recordedActions)
 			.. " действий"
 	)
@@ -4320,7 +4363,7 @@ local function restoreAutosave()
 		return false
 	end
 
-	if not isfile(AUTOSAVE_FILE_NAME) then
+	if not executorFileExists(AUTOSAVE_PATH) then
 		setDebug(
 			"Autosave",
 			"Strat_Autosave.txt не найден.",
@@ -4331,8 +4374,8 @@ local function restoreAutosave()
 
 	local success, errorMessage = pcall(function()
 		writefile(
-			STRATEGY_FILE_NAME,
-			readfile(AUTOSAVE_FILE_NAME)
+			STRATEGY_PATH,
+			executorRead(AUTOSAVE_PATH) or ""
 		)
 	end)
 
@@ -4348,7 +4391,7 @@ local function restoreAutosave()
 
 	setDebug(
 		"Autosave",
-		"Восстановил Strat_Autosave.txt в Workspace > Strat.txt.",
+		"Restored the strategy autosave to " .. STRATEGY_PATH .. ".",
 		"success"
 	)
 	return true
@@ -4365,9 +4408,7 @@ local function saveStrategy()
 	end
 
 	local content = serializeStrategy()
-	local success, errorMessage = pcall(function()
-		writefile(STRATEGY_FILE_NAME, content)
-	end)
+	local success, errorMessage = executorWrite(STRATEGY_PATH, content)
 
 	if not success then
 		setDebug(
@@ -4381,17 +4422,17 @@ local function saveStrategy()
 
 	setDebug(
 		"Сохранено",
-		"Успешно Сохранил запись в Workspace > Strat.txt !",
+		"Macro successfully saved to " .. STRATEGY_PATH,
 		"success"
 	)
 
 	if typeof(delfile) == "function" then
 		pcall(function()
-			delfile(AUTOSAVE_FILE_NAME)
+			delfile(AUTOSAVE_PATH)
 		end)
 	end
 
-	updateLinoriaLabel("Autosave", "Autosave: очищен после сохранения")
+	updateLinoriaLabel("Autosave", "Autosave cleared after saving")
 
 	return true
 end
@@ -4400,7 +4441,7 @@ local function startRecording()
 	if recording then
 		setDebug(
 			"Recorder",
-			"Запись уже запущена.",
+			"Recording is already running.",
 			"waiting"
 		)
 		return
@@ -4430,7 +4471,7 @@ local function startRecording()
 
 	setDebug(
 		"Recorder",
-		"Запись началась. Записываю юнитов, Skip и Speed.",
+		"Recording started. Capturing units, skips, and speed changes.",
 		"success"
 	)
 
@@ -4443,7 +4484,7 @@ local function stopRecording(shouldSave, discardPendingSells)
 	if not recording then
 		setDebug(
 			"Recorder",
-			"Запись уже остановлена.",
+			"Recording is already stopped.",
 			"waiting"
 		)
 		return false
@@ -4465,7 +4506,7 @@ local function stopRecording(shouldSave, discardPendingSells)
 
 	setDebug(
 		"Recorder",
-		"Запись остановлена.",
+		"Recording stopped.",
 		"success"
 	)
 
@@ -5398,14 +5439,19 @@ local syncingLinoria = false
 
 local function syncLinoriaToggle(toggleName, value)
 	local toggle = linoriaToggles[toggleName]
+		or rayfieldToggles[toggleName]
 
-	if not toggle or toggle.Value == value then
+	if not toggle then
 		return
 	end
 
 	syncingLinoria = true
 	pcall(function()
-		toggle:SetValue(value)
+		if typeof(toggle.SetValue) == "function" then
+			toggle:SetValue(value)
+		elseif typeof(toggle.Set) == "function" then
+			toggle:Set(value)
+		end
 	end)
 	syncingLinoria = false
 end
@@ -5426,6 +5472,7 @@ local function setAutoReplay(value)
 
 	renderMiscSettings()
 	saveSnapshot()
+	saveExecutorSettings()
 	syncLinoriaToggle("AutoReplay", autoReplayEnabled)
 	syncLinoriaToggle("AutoBack", autoBackToLobbyEnabled)
 	syncLinoriaToggle("AutoVip", autoVipAfterGameEnabled)
@@ -5447,6 +5494,7 @@ local function setAutoBack(value)
 
 	renderMiscSettings()
 	saveSnapshot()
+	saveExecutorSettings()
 	syncLinoriaToggle("AutoReplay", autoReplayEnabled)
 	syncLinoriaToggle("AutoBack", autoBackToLobbyEnabled)
 	syncLinoriaToggle("AutoVip", autoVipAfterGameEnabled)
@@ -5468,6 +5516,7 @@ local function setAutoVip(value)
 
 	renderMiscSettings()
 	saveSnapshot()
+	saveExecutorSettings()
 	syncLinoriaToggle("AutoReplay", autoReplayEnabled)
 	syncLinoriaToggle("AutoBack", autoBackToLobbyEnabled)
 	syncLinoriaToggle("AutoVip", autoVipAfterGameEnabled)
@@ -5484,6 +5533,7 @@ local function setAutoSkip(value)
 
 	renderMiscSettings()
 	saveSnapshot()
+	saveExecutorSettings()
 	syncLinoriaToggle("AutoSkip", autoSkipEnabled)
 end
 
@@ -5494,6 +5544,7 @@ local function setAutoX2Speed(value)
 
 	renderMiscSettings()
 	saveSnapshot()
+	saveExecutorSettings()
 	syncLinoriaToggle("AutoX2", autoX2SpeedEnabled)
 
 	if autoX2SpeedEnabled then
@@ -5504,6 +5555,13 @@ local function setAutoX2Speed(value)
 	else
 		requestGameSpeed(1, true)
 	end
+end
+
+local function setAutoTeleport(value)
+	autoTeleportEnabled = value == true
+	profileSnapshot.Settings.AutoTeleport = autoTeleportEnabled
+	saveSnapshot()
+	saveExecutorSettings()
 end
 
 local function loadLinoriaModule(relativePath)
@@ -5525,6 +5583,206 @@ end
 
 local function initializeLinoriaUi()
 	local success, result = pcall(function()
+		local source = game:HttpGet(RAYFIELD_URL)
+		local chunk, compileError = loadstring(source)
+
+		if not chunk then
+			error(compileError or "Rayfield failed to compile")
+		end
+
+		local Library = chunk()
+		local window = Library:CreateWindow({
+			Name = "Hamster Hub 🐹🔥",
+			LoadingTitle = "Hamster Hub 🐹🔥",
+			LoadingSubtitle = "Strategy automation",
+			Theme = "Dark",
+			DisableRayfieldPrompts = true,
+			DisableBuildWarnings = true,
+			ConfigurationSaving = {
+				Enabled = false,
+			},
+		})
+
+		local mainTab = window:CreateTab("Main", 4483362458)
+		local strategyTab = window:CreateTab("Strategy", 4483362458)
+		local recorderTab = window:CreateTab("Recorder", 4483362458)
+		local debugTab = window:CreateTab("Debug", 4483362458)
+
+		mainTab:CreateSection("Automation")
+		rayfieldToggles.AutoTeleport = mainTab:CreateToggle({
+			Name = "Auto Teleport",
+			CurrentValue = autoTeleportEnabled,
+			Flag = "AutoTeleport",
+			Callback = setAutoTeleport,
+		})
+		rayfieldToggles.AutoReplay = mainTab:CreateToggle({
+			Name = "Auto Replay",
+			CurrentValue = autoReplayEnabled,
+			Flag = "AutoReplay",
+			Callback = setAutoReplay,
+		})
+		rayfieldToggles.AutoBack = mainTab:CreateToggle({
+			Name = "Auto Back To Lobby",
+			CurrentValue = autoBackToLobbyEnabled,
+			Flag = "AutoBackToLobby",
+			Callback = setAutoBack,
+		})
+		rayfieldToggles.AutoVip = mainTab:CreateToggle({
+			Name = "Auto VIP After Game",
+			CurrentValue = autoVipAfterGameEnabled,
+			Flag = "AutoVipAfterGame",
+			Callback = setAutoVip,
+		})
+		rayfieldToggles.AutoSkip = mainTab:CreateToggle({
+			Name = "Auto Skip",
+			CurrentValue = autoSkipEnabled,
+			Flag = "AutoSkip",
+			Callback = setAutoSkip,
+		})
+		rayfieldToggles.AutoX2 = mainTab:CreateToggle({
+			Name = "Auto x2 Speed",
+			CurrentValue = autoX2SpeedEnabled,
+			Flag = "AutoX2Speed",
+			Callback = setAutoX2Speed,
+		})
+		mainTab:CreateButton({
+			Name = "Stop All Automation",
+			Callback = function()
+				setAutoTeleport(false)
+				setAutoReplay(false)
+				setAutoBack(false)
+				setAutoVip(false)
+				setAutoSkip(false)
+				setAutoX2Speed(false)
+				Library:Notify({
+					Title = "Hamster Hub",
+					Content = "All automation has been stopped.",
+					Duration = 3,
+				})
+			end,
+		})
+
+		strategyTab:CreateSection("Strategy")
+		strategyTab:CreateParagraph({
+			Title = "Strategy Validator",
+			Content = "Strat.txt is validated before teleporting. Map, Mode, Loadout, Units, and Actions must be valid.",
+		})
+		strategyTab:CreateParagraph({
+			Title = "Supported Modes",
+			Content = "Easy • Medium • Hard • Nightmare • Crazy • Boss Rush",
+		})
+		rayfieldLabels.LiveMaps = strategyTab:CreateParagraph({
+			Title = "Live Elevator Scanner",
+			Content = "Searching live elevators for supported map labels...",
+		})
+		task.spawn(function()
+			while rayfieldLibrary == Library do
+				local lobby = workspace:FindFirstChild("LOBBY_")
+				local elevators = lobby and lobby:FindFirstChild("Elevators")
+				local names = {}
+				if elevators then
+					for _, elevator in ipairs(elevators:GetChildren()) do
+						local label = elevator:FindFirstChild("mapName", true)
+							or elevator:FindFirstChild("MapName", true)
+						local mapName = label and (
+							label:IsA("TextLabel") and label.Text
+							or label:IsA("TextButton") and label.Text
+							or label:IsA("StringValue") and label.Value
+						)
+						if typeof(mapName) == "string" and mapName ~= "" then
+							table.insert(names, mapName)
+						end
+					end
+				end
+				table.sort(names)
+				local unique = {}
+				local compact = {}
+				for _, name in ipairs(names) do
+					if not unique[name] then
+						unique[name] = true
+						table.insert(compact, name)
+					end
+				end
+				local content = #compact > 0
+					and table.concat(compact, " • ")
+					or "Searching for a solo elevator..."
+				if rayfieldLabels.LiveMaps
+					and typeof(rayfieldLabels.LiveMaps.Set) == "function" then
+					pcall(function()
+						rayfieldLabels.LiveMaps:Set({
+							Title = "Live Elevator Scanner",
+							Content = content,
+						})
+					end)
+				end
+				task.wait(1)
+			end
+		end)
+		strategyTab:CreateButton({
+			Name = "Start Auto Execute",
+			Callback = function()
+				if autoTeleportEnabled then
+					Library:Notify({
+						Title = "Strategy",
+						Content = "Auto Execute will validate Strat.txt and search for a solo elevator.",
+						Duration = 4,
+					})
+				else
+					Library:Notify({
+						Title = "Auto Teleport is disabled",
+						Content = "Enable Auto Teleport before starting Auto Execute.",
+						Duration = 4,
+					})
+				end
+			end,
+		})
+
+		recorderTab:CreateSection("Macro Recorder")
+		rayfieldLabels.RecorderStatus = recorderTab:CreateLabel(
+			"Recorder stopped • actions: " .. tostring(#recordedActions)
+		)
+		rayfieldLabels.Autosave = recorderTab:CreateLabel(
+			"Autosave path: " .. AUTOSAVE_PATH
+		)
+		recorderTab:CreateButton({
+			Name = "Start Recording",
+			Callback = startRecording,
+		})
+		recorderTab:CreateButton({
+			Name = "Stop & Save Strat.txt",
+			Callback = function()
+				stopRecording(true)
+			end,
+		})
+		recorderTab:CreateButton({
+			Name = "Restore Autosave",
+			Callback = restoreAutosave,
+		})
+
+		debugTab:CreateSection("Status")
+		rayfieldLabels.Debug = debugTab:CreateLabel(
+			debugTitle.Text .. ": " .. debugText.Text
+		)
+		rayfieldLabels.FailureReport = debugTab:CreateLabel(
+			"Failure log: " .. ERROR_LOG_PATH
+		)
+		debugTab:CreateParagraph({
+			Title = "Settings",
+			Content = "Saved to " .. SETTINGS_PATH,
+		})
+
+		rayfieldLibrary = Library
+		screenGui.Enabled = false
+		updateRecorderStatus()
+		updateUnitInspector()
+		setDebug(
+			"Ready",
+			"Hamster Hub loaded. Rayfield UI is active.",
+			"success"
+		)
+		if false then
+			-- Legacy Linoria code below is retained only as an unreachable fallback
+			-- for older local copies; Rayfield is always initialized first.
 		local Library = loadLinoriaModule("Library.lua")
 		local ThemeManager = nil
 		local SaveManager = nil
@@ -5636,17 +5894,6 @@ local function initializeLinoriaUi()
 				.. tostring(getValue(info, "Mode") or "Unknown"),
 			true
 		)
-		linoriaLabels.MetadataDifficulty =
-			metadataGroup:AddLabel(
-				"Сложность: "
-					.. tostring(
-						getValue(info, "Difficulty")
-							or getValue(info, "DifficultyName")
-							or getValue(info, "DifficultyMode")
-							or "Any"
-					),
-				true
-			)
 		linoriaLabels.MetadataDeck =
 			metadataGroup:AddLabel("Колода: загрузка...", true)
 
@@ -5840,6 +6087,7 @@ local function initializeLinoriaUi()
 			end)
 		end
 
+		end
 		return Library
 	end)
 
