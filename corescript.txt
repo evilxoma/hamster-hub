@@ -4,6 +4,7 @@ local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
+local GuiService = game:GetService("GuiService")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -19,7 +20,15 @@ local VOTE_CONFIRMATION_TIMEOUT = 5
 local SNAPSHOT_KEY = "HamsterHub_ProfileSnapshot_V5"
 local STRATEGY_FILE_NAME = "Strat.txt"
 local AUTOSAVE_FILE_NAME = "Strat_Autosave.txt"
+local ERROR_LOG_FILE_NAME = "Strategy_Error_Log.txt"
 local STRATEGY_FORMAT_VERSION = 6
+local VIP_SERVER_URL =
+	"https://www.roblox.com/share?code=4396b9eeb786af4d9b28fc463d91a82c&type=Server"
+local VIP_SHARE_CODE = "4396b9eeb786af4d9b28fc463d91a82c"
+local VIP_SERVER_DEEPLINK =
+	"roblox://navigation/share_links?code="
+		.. VIP_SHARE_CODE
+		.. "&type=Server"
 local LINORIA_REPOSITORY =
 	"https://raw.githubusercontent.com/violin-suzutsuki/LinoriaLib/main/"
 local TOWER_MATCH_DISTANCE = 1.25
@@ -40,6 +49,7 @@ local profileSnapshot = {
 	Settings = {
 		AutoReplay = false,
 		AutoBackToLobby = false,
+		AutoVipAfterGame = false,
 		AutoSkip = false,
 		AutoX2Speed = false,
 		CurrentActionGroup = "Early Game",
@@ -99,6 +109,9 @@ local function loadSavedSnapshot()
 		profileSnapshot.Settings.AutoBackToLobby =
 			decoded.Settings.AutoBackToLobby == true
 
+		profileSnapshot.Settings.AutoVipAfterGame =
+			decoded.Settings.AutoVipAfterGame == true
+
 		profileSnapshot.Settings.AutoSkip =
 			decoded.Settings.AutoSkip == true
 
@@ -125,7 +138,10 @@ local function loadSavedSnapshot()
 			end
 		end
 
-		if profileSnapshot.Settings.AutoReplay then
+		if profileSnapshot.Settings.AutoVipAfterGame then
+			profileSnapshot.Settings.AutoReplay = false
+			profileSnapshot.Settings.AutoBackToLobby = false
+		elseif profileSnapshot.Settings.AutoReplay then
 			profileSnapshot.Settings.AutoBackToLobby = false
 		end
 	end
@@ -169,7 +185,7 @@ local container = Instance.new("Frame")
 container.Name = "Container"
 container.AnchorPoint = Vector2.new(0.5, 0.5)
 container.Position = UDim2.new(0.5, 0, 0.5, 18)
-container.Size = UDim2.fromOffset(430, 500)
+container.Size = UDim2.fromOffset(430, 552)
 container.BackgroundTransparency = 1
 container.Parent = screenGui
 
@@ -336,6 +352,188 @@ local function setDebug(titleText, message, state)
 	else
 		statusDot.BackgroundColor3 = Color3.fromRGB(235, 160, 65)
 	end
+end
+
+local function appendFailureReport(message, context)
+	if typeof(writefile) ~= "function"
+		and typeof(appendfile) ~= "function" then
+		return false
+	end
+
+	context = typeof(context) == "table" and context or {}
+
+	local info = workspace:FindFirstChild("Info")
+	local function infoValue(name)
+		local valueObject = info and info:FindFirstChild(name)
+
+		if valueObject and valueObject:IsA("ValueBase") then
+			return valueObject.Value
+		end
+
+		return nil
+	end
+
+	local lines = {
+		"",
+		"==================================================",
+		"UTC: " .. os.date("!%Y-%m-%dT%H:%M:%SZ"),
+		"Stage: " .. tostring(context.Stage or "Hamster Hub"),
+		"Message: " .. tostring(message),
+		"PlaceId: " .. tostring(game.PlaceId),
+		"JobId: " .. tostring(game.JobId),
+		"PrivateServerId: " .. tostring(game.PrivateServerId),
+		"Map: " .. tostring(infoValue("Map") or "Unknown"),
+		"Mode: " .. tostring(infoValue("Mode") or "Unknown"),
+		"Difficulty: "
+			.. tostring(
+				infoValue("Difficulty")
+					or infoValue("DifficultyName")
+					or infoValue("DifficultyMode")
+					or "Unknown"
+			),
+		"Wave: " .. tostring(infoValue("Wave") or 0),
+		"Timing: " .. tostring(infoValue("Time") or "Unknown"),
+	}
+
+	if context.ActionIndex then
+		table.insert(
+			lines,
+			"ActionIndex: #" .. tostring(context.ActionIndex)
+		)
+	end
+
+	local action = context.Action
+
+	if typeof(action) == "table" then
+		table.insert(
+			lines,
+			"ActionType: " .. tostring(action.Type or "Unknown")
+		)
+		table.insert(
+			lines,
+			"UnitId: " .. tostring(action.UnitId or "—")
+		)
+		table.insert(
+			lines,
+			"Unit: "
+				.. tostring(
+					action.Unit
+						or action.PreviousUnit
+						or "—"
+				)
+		)
+		table.insert(
+			lines,
+			"ActionWave: " .. tostring(action.Wave or "—")
+		)
+		table.insert(
+			lines,
+			"ActionTiming: " .. tostring(action.Timing or "—")
+		)
+	end
+
+	table.insert(lines, "==================================================")
+
+	local entry = table.concat(lines, "\n") .. "\n"
+	local success = false
+
+	if typeof(appendfile) == "function" then
+		success = pcall(function()
+			appendfile(ERROR_LOG_FILE_NAME, entry)
+		end)
+	else
+		success = pcall(function()
+			local previous = ""
+
+			if typeof(isfile) == "function"
+				and typeof(readfile) == "function"
+				and isfile(ERROR_LOG_FILE_NAME) then
+				previous = readfile(ERROR_LOG_FILE_NAME)
+			end
+
+			writefile(ERROR_LOG_FILE_NAME, previous .. entry)
+		end)
+	end
+
+	if success then
+		updateLinoriaLabel(
+			"FailureReport",
+			"Failure Report: записан в "
+				.. ERROR_LOG_FILE_NAME
+		)
+	end
+
+	return success
+end
+
+local function launchVipServer()
+	local environment = typeof(getgenv) == "function"
+		and getgenv()
+		or _G
+	local launchers = {}
+
+	local function addLauncher(candidate)
+		if typeof(candidate) == "function" then
+			table.insert(launchers, candidate)
+		end
+	end
+
+	addLauncher(environment.openurl)
+	addLauncher(environment.open_url)
+	addLauncher(environment.openbrowser)
+	addLauncher(environment.open_browser)
+
+	local synEnvironment = environment.syn or _G.syn
+
+	if typeof(synEnvironment) == "table" then
+		addLauncher(synEnvironment.open_url)
+		addLauncher(synEnvironment.openurl)
+	end
+
+	for _, launcher in ipairs(launchers) do
+		local success, result = pcall(
+			launcher,
+			VIP_SERVER_DEEPLINK
+		)
+
+		if success and result ~= false then
+			setDebug(
+				"Auto VIP",
+				"Открываю указанный VIP-сервер...",
+				"success"
+			)
+			return true
+		end
+	end
+
+	local browserSuccess = pcall(function()
+		GuiService:OpenBrowserWindow(VIP_SERVER_URL)
+	end)
+
+	if browserSuccess then
+		setDebug(
+			"Auto VIP",
+			"Открываю VIP-ссылку через Roblox...",
+			"success"
+		)
+		return true
+	end
+
+	if typeof(setclipboard) == "function" then
+		pcall(function()
+			setclipboard(VIP_SERVER_URL)
+		end)
+	end
+
+	local errorMessage =
+		"Executor не поддерживает автоматическое открытие VIP-ссылки. "
+		.. "Ссылка скопирована в буфер обмена."
+
+	appendFailureReport(errorMessage, {
+		Stage = "Auto VIP After Game",
+	})
+	setDebug("Auto VIP", errorMessage, "error")
+	return false
 end
 
 
@@ -600,8 +798,15 @@ local autoX2SpeedButton = createButton(
 	UDim2.fromOffset(198, 42)
 )
 
+local autoVipButton = createButton(
+	"AutoVipAfterGame",
+	"AUTO VIP AFTER GAME: OFF",
+	UDim2.fromOffset(14, 477),
+	UDim2.fromOffset(402, 42)
+)
+
 local footerLine = Instance.new("Frame")
-footerLine.Position = UDim2.fromOffset(14, 485)
+footerLine.Position = UDim2.fromOffset(14, 531)
 footerLine.Size = UDim2.new(1, -28, 0, 1)
 footerLine.BackgroundColor3 = Color3.fromRGB(49, 53, 62)
 footerLine.BackgroundTransparency = 0.3
@@ -1144,6 +1349,9 @@ local autoReplayEnabled =
 local autoBackToLobbyEnabled =
 	profileSnapshot.Settings.AutoBackToLobby == true
 
+local autoVipAfterGameEnabled =
+	profileSnapshot.Settings.AutoVipAfterGame == true
+
 local autoSkipEnabled =
 	profileSnapshot.Settings.AutoSkip == true
 
@@ -1411,6 +1619,12 @@ local function renderMiscSettings()
 		autoX2SpeedEnabled,
 		"AUTO X2 SPEED"
 	)
+
+	updateToggleButton(
+		autoVipButton,
+		autoVipAfterGameEnabled,
+		"AUTO VIP AFTER GAME"
+	)
 end
 
 local function rememberCurrentTowers()
@@ -1465,6 +1679,7 @@ local function startHamsterStrategyPlayer()
 	local Players = game:GetService("Players")
 	local ReplicatedStorage =
 		game:GetService("ReplicatedStorage")
+	local GuiService = game:GetService("GuiService")
 
 	local player = Players.LocalPlayer
 		or Players.PlayerAdded:Wait()
@@ -1473,8 +1688,206 @@ local function startHamsterStrategyPlayer()
 		print("[HAMSTER STRATEGY] " .. tostring(message))
 	end
 
-	local function fail(message)
+	local function appendFailureReport(
+		message,
+		action,
+		actionIndex,
+		stage
+	)
+		if typeof(writefile) ~= "function"
+			and typeof(appendfile) ~= "function" then
+			return false
+		end
+
+		local infoFolder = workspace:FindFirstChild("Info")
+		local function infoValue(name)
+			local valueObject =
+				infoFolder and infoFolder:FindFirstChild(name)
+
+			if valueObject and valueObject:IsA("ValueBase") then
+				return valueObject.Value
+			end
+
+			return nil
+		end
+
+		local lines = {
+			"",
+			"==================================================",
+			"UTC: " .. os.date("!%Y-%m-%dT%H:%M:%SZ"),
+			"Stage: " .. tostring(stage or "Strategy Replay"),
+			"Message: " .. tostring(message),
+			"PlaceId: " .. tostring(game.PlaceId),
+			"JobId: " .. tostring(game.JobId),
+			"PrivateServerId: " .. tostring(game.PrivateServerId),
+			"StrategyMap: " .. tostring(STRATEGY.Map or "Unknown"),
+			"StrategyMode: " .. tostring(STRATEGY.Mode or "Unknown"),
+			"StrategyDifficulty: "
+				.. tostring(STRATEGY.Difficulty or "Unknown"),
+			"CurrentMap: "
+				.. tostring(infoValue("Map") or "Unknown"),
+			"CurrentMode: "
+				.. tostring(infoValue("Mode") or "Unknown"),
+			"CurrentDifficulty: "
+				.. tostring(
+					infoValue("Difficulty")
+						or infoValue("DifficultyName")
+						or infoValue("DifficultyMode")
+						or "Unknown"
+				),
+			"CurrentWave: " .. tostring(infoValue("Wave") or 0),
+			"CurrentTiming: "
+				.. tostring(infoValue("Time") or "Unknown"),
+		}
+
+		if actionIndex then
+			table.insert(
+				lines,
+				"ActionIndex: #" .. tostring(actionIndex)
+			)
+		end
+
+		if typeof(action) == "table" then
+			table.insert(
+				lines,
+				"ActionType: " .. tostring(action.Type or "Unknown")
+			)
+			table.insert(
+				lines,
+				"UnitId: " .. tostring(action.UnitId or "—")
+			)
+			table.insert(
+				lines,
+				"Unit: "
+					.. tostring(
+						action.Unit
+							or action.PreviousUnit
+							or "—"
+					)
+			)
+			table.insert(
+				lines,
+				"ActionWave: " .. tostring(action.Wave or "—")
+			)
+			table.insert(
+				lines,
+				"ActionTiming: "
+					.. tostring(action.Timing or "—")
+			)
+			table.insert(
+				lines,
+				"ActionPrice: " .. tostring(action.Price or "—")
+			)
+		end
+
+		table.insert(lines, "==================================================")
+
+		local entry = table.concat(lines, "\n") .. "\n"
+		local success = false
+
+		if typeof(appendfile) == "function" then
+			success = pcall(function()
+				appendfile("Strategy_Error_Log.txt", entry)
+			end)
+		else
+			success = pcall(function()
+				local previous = ""
+
+				if typeof(isfile) == "function"
+					and typeof(readfile) == "function"
+					and isfile("Strategy_Error_Log.txt") then
+					previous = readfile("Strategy_Error_Log.txt")
+				end
+
+				writefile(
+					"Strategy_Error_Log.txt",
+					previous .. entry
+				)
+			end)
+		end
+
+		return success
+	end
+
+	local function fail(message, action, actionIndex, stage)
 		warn("[HAMSTER STRATEGY] " .. tostring(message))
+		appendFailureReport(
+			message,
+			action,
+			actionIndex,
+			stage
+		)
+	end
+
+	local function launchVipServer()
+		local shareCode = tostring(
+			STRATEGY.VipShareCode
+				or "4396b9eeb786af4d9b28fc463d91a82c"
+		)
+		local serverUrl = tostring(
+			STRATEGY.VipServerUrl
+				or (
+					"https://www.roblox.com/share?code="
+					.. shareCode
+					.. "&type=Server"
+				)
+		)
+		local deepLink =
+			"roblox://navigation/share_links?code="
+				.. shareCode
+				.. "&type=Server"
+		local launchers = {}
+
+		local function addLauncher(candidate)
+			if typeof(candidate) == "function" then
+				table.insert(launchers, candidate)
+			end
+		end
+
+		addLauncher(environment.openurl)
+		addLauncher(environment.open_url)
+		addLauncher(environment.openbrowser)
+		addLauncher(environment.open_browser)
+
+		local synEnvironment = environment.syn or _G.syn
+
+		if typeof(synEnvironment) == "table" then
+			addLauncher(synEnvironment.open_url)
+			addLauncher(synEnvironment.openurl)
+		end
+
+		for _, launcher in ipairs(launchers) do
+			local success, result = pcall(launcher, deepLink)
+
+			if success and result ~= false then
+				log("Открываю указанный VIP-сервер.")
+				return true
+			end
+		end
+
+		local browserSuccess = pcall(function()
+			GuiService:OpenBrowserWindow(serverUrl)
+		end)
+
+		if browserSuccess then
+			log("Открываю VIP-ссылку через Roblox.")
+			return true
+		end
+
+		if typeof(setclipboard) == "function" then
+			pcall(function()
+				setclipboard(serverUrl)
+			end)
+		end
+
+		fail(
+			"Executor не поддерживает автоматическое открытие "
+				.. "VIP-ссылки. Ссылка скопирована в буфер обмена.",
+			nil,
+			nil,
+			"Auto VIP After Game"
+		)
+		return false
 	end
 
 	local oldOverlay =
@@ -3425,7 +3838,9 @@ local function startHamsterStrategyPlayer()
 	local function handlePostGame()
 		task.wait(0.75)
 
-		if STRATEGY.AutoReplay then
+		if STRATEGY.AutoVipAfterGame then
+			launchVipServer()
+		elseif STRATEGY.AutoReplay then
 			local exitGame = events:FindFirstChild("ExitGame")
 
 			if exitGame and exitGame:IsA("RemoteEvent") then
@@ -3454,7 +3869,10 @@ local function startHamsterStrategyPlayer()
 		if not compatible then
 			fail(
 				"Проверка совместимости не пройдена: "
-					.. tostring(compatibilityError)
+					.. tostring(compatibilityError),
+				nil,
+				nil,
+				"Compatibility Check"
 			)
 			return false
 		end
@@ -3485,7 +3903,10 @@ local function startHamsterStrategyPlayer()
 						"Действие #"
 							.. tostring(index)
 							.. ": "
-							.. tostring(timingError)
+							.. tostring(timingError),
+						action,
+						index,
+						"Wait For Action"
 					)
 					return false
 				end
@@ -3501,7 +3922,10 @@ local function startHamsterStrategyPlayer()
 							.. " ("
 							.. tostring(action.Type)
 							.. "): "
-							.. tostring(actionError)
+							.. tostring(actionError),
+						action,
+						index,
+						"Play Action"
 					)
 					return false
 				end
@@ -3635,6 +4059,15 @@ local function serializeStrategy()
 			.. ",",
 		"\tAutoBackToLobby = "
 			.. tostring(autoBackToLobbyEnabled)
+			.. ",",
+		"\tAutoVipAfterGame = "
+			.. tostring(autoVipAfterGameEnabled)
+			.. ",",
+		"\tVipServerUrl = "
+			.. string.format("%q", VIP_SERVER_URL)
+			.. ",",
+		"\tVipShareCode = "
+			.. string.format("%q", VIP_SHARE_CODE)
 			.. ",",
 		"\tStartWave = "
 			.. tostring(recordingStartWave)
@@ -4932,6 +5365,11 @@ local function handleGameEnd()
 	end
 
 	task.delay(0.75, function()
+		if autoVipAfterGameEnabled then
+			launchVipServer()
+			return
+		end
+
 		local events = ReplicatedStorage:FindFirstChild("Events")
 
 		if not events then
@@ -4977,16 +5415,20 @@ local function setAutoReplay(value)
 
 	if autoReplayEnabled then
 		autoBackToLobbyEnabled = false
+		autoVipAfterGameEnabled = false
 	end
 
 	profileSnapshot.Settings.AutoReplay = autoReplayEnabled
 	profileSnapshot.Settings.AutoBackToLobby =
 		autoBackToLobbyEnabled
+	profileSnapshot.Settings.AutoVipAfterGame =
+		autoVipAfterGameEnabled
 
 	renderMiscSettings()
 	saveSnapshot()
 	syncLinoriaToggle("AutoReplay", autoReplayEnabled)
 	syncLinoriaToggle("AutoBack", autoBackToLobbyEnabled)
+	syncLinoriaToggle("AutoVip", autoVipAfterGameEnabled)
 end
 
 local function setAutoBack(value)
@@ -4994,16 +5436,41 @@ local function setAutoBack(value)
 
 	if autoBackToLobbyEnabled then
 		autoReplayEnabled = false
+		autoVipAfterGameEnabled = false
 	end
 
 	profileSnapshot.Settings.AutoReplay = autoReplayEnabled
 	profileSnapshot.Settings.AutoBackToLobby =
 		autoBackToLobbyEnabled
+	profileSnapshot.Settings.AutoVipAfterGame =
+		autoVipAfterGameEnabled
 
 	renderMiscSettings()
 	saveSnapshot()
 	syncLinoriaToggle("AutoReplay", autoReplayEnabled)
 	syncLinoriaToggle("AutoBack", autoBackToLobbyEnabled)
+	syncLinoriaToggle("AutoVip", autoVipAfterGameEnabled)
+end
+
+local function setAutoVip(value)
+	autoVipAfterGameEnabled = value == true
+
+	if autoVipAfterGameEnabled then
+		autoReplayEnabled = false
+		autoBackToLobbyEnabled = false
+	end
+
+	profileSnapshot.Settings.AutoReplay = autoReplayEnabled
+	profileSnapshot.Settings.AutoBackToLobby =
+		autoBackToLobbyEnabled
+	profileSnapshot.Settings.AutoVipAfterGame =
+		autoVipAfterGameEnabled
+
+	renderMiscSettings()
+	saveSnapshot()
+	syncLinoriaToggle("AutoReplay", autoReplayEnabled)
+	syncLinoriaToggle("AutoBack", autoBackToLobbyEnabled)
+	syncLinoriaToggle("AutoVip", autoVipAfterGameEnabled)
 end
 
 local function setAutoSkip(value)
@@ -5240,6 +5707,18 @@ local function initializeLinoriaUi()
 				end,
 			})
 
+		linoriaToggles.AutoVip =
+			automation:AddToggle("HH_AutoVipAfterGame", {
+				Text = "Auto VIP After Game",
+				Default = autoVipAfterGameEnabled,
+				Callback = function(value)
+					if not syncingLinoria then
+						setAutoVip(value)
+					end
+				end,
+				Tooltip = VIP_SERVER_URL,
+			})
+
 		linoriaToggles.AutoSkip =
 			automation:AddToggle("HH_AutoSkip", {
 				Text = "Auto Skip",
@@ -5268,6 +5747,28 @@ local function initializeLinoriaUi()
 		linoriaLabels.Debug =
 			debugGroup:AddLabel(
 				debugTitle.Text .. ": " .. debugText.Text,
+				true
+			)
+
+		local hasFailureReport = false
+
+		if typeof(isfile) == "function" then
+			pcall(function()
+				hasFailureReport = isfile(ERROR_LOG_FILE_NAME)
+			end)
+		end
+
+		linoriaLabels.FailureReport =
+			debugGroup:AddLabel(
+				hasFailureReport
+					and (
+						"Failure Report: найден "
+						.. ERROR_LOG_FILE_NAME
+					)
+					or (
+						"Failure Report: готов • "
+						.. ERROR_LOG_FILE_NAME
+					),
 				true
 			)
 
@@ -5381,6 +5882,10 @@ end)
 
 autoX2SpeedButton.Activated:Connect(function()
 	setAutoX2Speed(not autoX2SpeedEnabled)
+end)
+
+autoVipButton.Activated:Connect(function()
+	setAutoVip(not autoVipAfterGameEnabled)
 end)
 
 renderMiscSettings()
