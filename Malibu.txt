@@ -1,0 +1,3569 @@
+--[[
+    Hamster Hub CLEANROOM R2
+    Full single-file rewrite.
+    Strategy execution policy: InstantWhenAvailable.
+    Recorded Time, Timing and Wave never schedule actions.
+]]
+
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TeleportService = game:GetService("TeleportService")
+local HttpService = game:GetService("HttpService")
+local GuiService = game:GetService("GuiService")
+local RunService = game:GetService("RunService")
+
+local LocalPlayer = Players.LocalPlayer or Players.PlayerAdded:Wait()
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui", 20)
+if not PlayerGui then
+    error("[Hamster Hub] PlayerGui did not load within 20 seconds.")
+end
+
+local BUILD_ID = "CLEANROOM-R2-20260731"
+local FORMAT_VERSION = 10
+local EXECUTION_MODE = "InstantWhenAvailable"
+local HUB_TITLE = "Hamster Hub " .. utf8.char(0x1F439) .. utf8.char(0x1F525)
+
+local ROOT_DIRECTORY = "HamsterHub"
+local PROJECT_DIRECTORY = ROOT_DIRECTORY .. "/ModernRebornTTD"
+local STRATEGY_PATH = PROJECT_DIRECTORY .. "/Strat.txt"
+local AUTOSAVE_PATH = PROJECT_DIRECTORY .. "/Strat_Autosave.txt"
+local FAILURE_PATH = PROJECT_DIRECTORY .. "/Strategy_Error_Log.txt"
+local SETTINGS_PATH = PROJECT_DIRECTORY .. "/settings.json"
+local TELEPORT_STRATEGY_KEY = "HamsterHub_CleanroomR2_Strategy"
+
+local TECHNICAL_POLL = 0.05
+local REMOTE_TIMEOUT = 20
+local MATCH_LOAD_TIMEOUT = 60
+local ELEVATOR_SEARCH_TIMEOUT = 90
+local MONEY_WAIT_TIMEOUT = 900
+local CONFIRM_TIMEOUT = 4
+local UPGRADE_REPLACEMENT_WINDOW = 2.75
+local SELL_GRACE_WINDOW = 1.25
+local TOWER_POSITION_TOLERANCE = 4
+local MAX_ATTEMPTS = 3
+local RETRY_DELAY = 0.10
+
+local Environment = typeof(getgenv) == "function" and getgenv() or _G
+local IncomingStrategy = Environment.HamsterHubAutoexecStrategy
+Environment.HamsterHubAutoexecStrategy = nil
+
+if typeof(Environment.HamsterHubCleanroomShutdown) == "function" then
+    pcall(Environment.HamsterHubCleanroomShutdown)
+end
+
+local SessionSerial = (tonumber(Environment.HamsterHubCleanroomSerial) or 0) + 1
+Environment.HamsterHubCleanroomSerial = SessionSerial
+
+local Runtime = {
+    Alive = true,
+    Serial = SessionSerial,
+    Connections = {},
+    Instances = {},
+    DeferredTokens = {},
+}
+
+local function runtimeAlive()
+    return Runtime.Alive and Environment.HamsterHubCleanroomSerial == Runtime.Serial
+end
+
+local function keepConnection(connection)
+    if connection then
+        table.insert(Runtime.Connections, connection)
+    end
+    return connection
+end
+
+local function keepInstance(instance)
+    if instance then
+        table.insert(Runtime.Instances, instance)
+    end
+    return instance
+end
+
+local function shutdownRuntime()
+    if not Runtime.Alive then
+        return
+    end
+    Runtime.Alive = false
+
+    for _, connection in ipairs(Runtime.Connections) do
+        pcall(function()
+            connection:Disconnect()
+        end)
+    end
+    table.clear(Runtime.Connections)
+
+    for _, instance in ipairs(Runtime.Instances) do
+        pcall(function()
+            if instance and instance.Parent then
+                instance:Destroy()
+            end
+        end)
+    end
+    table.clear(Runtime.Instances)
+    table.clear(Runtime.DeferredTokens)
+end
+
+Environment.HamsterHubCleanroomShutdown = shutdownRuntime
+
+local function console(message)
+    print("[Hamster Hub R2] " .. tostring(message))
+end
+
+local function consoleWarn(message)
+    warn("[Hamster Hub R2] " .. tostring(message))
+end
+
+local function stripRichText(value)
+    return tostring(value or ""):gsub("<.->", "")
+end
+
+local function trim(value)
+    local cleaned = stripRichText(value)
+        :gsub("[%c]", " ")
+        :gsub("%s+", " ")
+    return cleaned:match("^%s*(.-)%s*$") or ""
+end
+
+local function keyOf(value)
+    return string.lower(trim(value)):gsub("[^%w]", "")
+end
+
+local function assetIdOf(value)
+    local text = tostring(value or "")
+    return text:match("%d+") or text
+end
+
+local function isFiniteNumber(value)
+    return typeof(value) == "number" and value == value and value > -math.huge and value < math.huge
+end
+
+local function asNumber(value)
+    local number = tonumber(value)
+    return isFiniteNumber(number) and number or nil
+end
+
+local function valueChild(parent, name)
+    local object = parent and parent:FindFirstChild(name)
+    if object and object:IsA("ValueBase") then
+        return object.Value
+    end
+    return nil
+end
+
+local function attributeOrValue(parent, names)
+    if not parent then
+        return nil
+    end
+    for _, name in ipairs(names) do
+        local attribute = parent:GetAttribute(name)
+        if attribute ~= nil then
+            return attribute
+        end
+        local childValue = valueChild(parent, name)
+        if childValue ~= nil then
+            return childValue
+        end
+    end
+    return nil
+end
+
+local function firstDescendant(parent, names, classNames)
+    if not parent then
+        return nil
+    end
+
+    local classSet = nil
+    if classNames then
+        classSet = {}
+        for _, className in ipairs(classNames) do
+            classSet[className] = true
+        end
+    end
+
+    for _, name in ipairs(names) do
+        local object = parent:FindFirstChild(name, true)
+        if object and (not classSet or classSet[object.ClassName]) then
+            return object
+        end
+    end
+    return nil
+end
+
+local function safePivot(model)
+    if not model or not model:IsA("Model") then
+        return nil
+    end
+    local success, pivot = pcall(model.GetPivot, model)
+    if success then
+        return pivot
+    end
+    local root = model.PrimaryPart
+        or model:FindFirstChild("HumanoidRootPart")
+        or model:FindFirstChildWhichIsA("BasePart", true)
+    return root and root.CFrame or nil
+end
+
+local function waitForCondition(predicate, timeout, interval)
+    local started = os.clock()
+    local cadence = interval or TECHNICAL_POLL
+    repeat
+        local ok, result, extra = pcall(predicate)
+        if ok and result then
+            return true, result, extra
+        end
+        if not runtimeAlive() then
+            return false, "Runtime stopped"
+        end
+        task.wait(cadence)
+    until os.clock() - started >= timeout
+    return false, "Timed out"
+end
+
+local function tableCopy(source)
+    local result = {}
+    if typeof(source) == "table" then
+        for key, value in pairs(source) do
+            if typeof(value) == "table" then
+                result[key] = tableCopy(value)
+            else
+                result[key] = value
+            end
+        end
+    end
+    return result
+end
+
+-- Executor file system --------------------------------------------------------
+
+local FileSystem = {}
+
+function FileSystem.available(name)
+    return typeof(Environment[name]) == "function" or typeof(_G[name]) == "function"
+end
+
+function FileSystem.functionFor(name)
+    if typeof(Environment[name]) == "function" then
+        return Environment[name]
+    end
+    if typeof(_G[name]) == "function" then
+        return _G[name]
+    end
+    return nil
+end
+
+function FileSystem.ensureDirectories()
+    local makeFolder = FileSystem.functionFor("makefolder")
+    if not makeFolder then
+        return false, "makefolder is unavailable"
+    end
+    pcall(makeFolder, ROOT_DIRECTORY)
+    pcall(makeFolder, PROJECT_DIRECTORY)
+    return true
+end
+
+function FileSystem.exists(path)
+    local isFile = FileSystem.functionFor("isfile")
+    if not isFile then
+        return false
+    end
+    local ok, result = pcall(isFile, path)
+    return ok and result == true
+end
+
+function FileSystem.read(path)
+    local readFile = FileSystem.functionFor("readfile")
+    if not readFile or not FileSystem.exists(path) then
+        return nil, "File is unavailable"
+    end
+    local ok, result = pcall(readFile, path)
+    return ok and result or nil, ok and nil or tostring(result)
+end
+
+function FileSystem.write(path, content)
+    local writeFile = FileSystem.functionFor("writefile")
+    if not writeFile then
+        return false, "writefile is unavailable"
+    end
+    FileSystem.ensureDirectories()
+    local ok, failure = pcall(writeFile, path, tostring(content))
+    return ok, ok and nil or tostring(failure)
+end
+
+function FileSystem.append(path, content)
+    FileSystem.ensureDirectories()
+    local appendFile = FileSystem.functionFor("appendfile")
+    if appendFile then
+        local ok, failure = pcall(appendFile, path, tostring(content))
+        return ok, ok and nil or tostring(failure)
+    end
+
+    local previous = FileSystem.read(path) or ""
+    return FileSystem.write(path, previous .. tostring(content))
+end
+
+FileSystem.ensureDirectories()
+
+-- Shared state and UI bridge -------------------------------------------------
+
+local State = {
+    Build = BUILD_ID,
+    Map = "Unknown",
+    Mode = "Unknown",
+    Wave = 0,
+    GameTime = "Unknown",
+    Balance = 0,
+    Speed = 1,
+    Loadout = {},
+    RecorderStatus = "Stopped",
+    PlayerStatus = "Idle",
+    SelectedElevator = "None",
+    RequestedMap = "None",
+    ResolvedMap = "None",
+    RequestedMode = "None",
+    ResolvedMode = "None",
+    ElevatorPlayers = 0,
+    EntryConfirmed = false,
+    ModeConfirmed = false,
+    NextOperation = "None",
+    LastError = "None",
+    Strategy = nil,
+    Settings = {
+        AutoTeleport = true,
+        AutoSkip = false,
+        AutoX2Speed = false,
+        AutoReplay = false,
+        AutoBackToLobby = false,
+        AutoVipAfterGame = false,
+    },
+}
+
+local Ui = {
+    Rayfield = nil,
+    Window = nil,
+    Labels = {},
+    Toggles = {},
+}
+
+local function setUiLabel(name, text)
+    local label = Ui.Labels[name]
+    if label and typeof(label.Set) == "function" then
+        local ok, failure = pcall(function()
+            label:Set(tostring(text))
+        end)
+        if not ok then
+            consoleWarn("Could not update label " .. name .. ": " .. tostring(failure))
+        end
+    end
+end
+
+local function setLastError(message, stage)
+    State.LastError = tostring(stage or "Error") .. ": " .. tostring(message)
+    setUiLabel("LastError", "Last error: " .. State.LastError)
+    consoleWarn(State.LastError)
+end
+
+local function setPlayerStatus(text)
+    State.PlayerStatus = tostring(text)
+    setUiLabel("PlayerStatus", "Strategy Player: " .. State.PlayerStatus)
+end
+
+local function setRecorderStatus(text)
+    State.RecorderStatus = tostring(text)
+    setUiLabel("RecorderStatus", "Recorder: " .. State.RecorderStatus)
+end
+
+local function setNextOperation(text)
+    State.NextOperation = tostring(text)
+    setUiLabel("NextOperation", "Next operation: " .. State.NextOperation)
+end
+
+local function saveSettings()
+    local ok, encoded = pcall(HttpService.JSONEncode, HttpService, State.Settings)
+    if ok then
+        FileSystem.write(SETTINGS_PATH, encoded)
+    end
+end
+
+local function loadSettings()
+    local content = FileSystem.read(SETTINGS_PATH)
+    if not content then
+        return
+    end
+    local ok, decoded = pcall(HttpService.JSONDecode, HttpService, content)
+    if not ok or typeof(decoded) ~= "table" then
+        return
+    end
+    for key, defaultValue in pairs(State.Settings) do
+        if typeof(decoded[key]) == typeof(defaultValue) then
+            State.Settings[key] = decoded[key]
+        end
+    end
+end
+
+loadSettings()
+
+local function appendFailure(message, action, index, stage)
+    local info = workspace:FindFirstChild("Info")
+    local lines = {
+        "",
+        "==================================================",
+        "Build: " .. BUILD_ID,
+        "UTC: " .. os.date("!%Y-%m-%dT%H:%M:%SZ"),
+        "Stage: " .. tostring(stage or "Strategy Player"),
+        "Message: " .. tostring(message),
+        "Map: " .. tostring(attributeOrValue(info, {"Map", "MapName"}) or State.Map),
+        "Mode: " .. tostring(attributeOrValue(info, {"Mode", "GameMode"}) or State.Mode),
+        "Wave: " .. tostring(attributeOrValue(info, {"Wave"}) or State.Wave),
+        "ActionIndex: " .. tostring(index or "-"),
+        "ActionType: " .. tostring(typeof(action) == "table" and action.Type or "-"),
+        "ActionId: " .. tostring(typeof(action) == "table" and action.ActionId or "-"),
+        "UnitId: " .. tostring(typeof(action) == "table" and action.UnitId or "-"),
+        "Unit: " .. tostring(typeof(action) == "table" and (action.Unit or action.Template) or "-"),
+        "==================================================",
+    }
+    FileSystem.append(FAILURE_PATH, table.concat(lines, "\n") .. "\n")
+end
+
+-- Remote index ---------------------------------------------------------------
+
+local RemoteIndex = {
+    ByName = {},
+    Roots = {},
+}
+
+local function indexRemote(instance)
+    if not instance then
+        return
+    end
+    if instance:IsA("RemoteEvent") or instance:IsA("RemoteFunction") then
+        local nameKey = keyOf(instance.Name)
+        RemoteIndex.ByName[nameKey] = RemoteIndex.ByName[nameKey] or {}
+        table.insert(RemoteIndex.ByName[nameKey], instance)
+    end
+end
+
+local function unindexRemote(instance)
+    if not instance or not (instance:IsA("RemoteEvent") or instance:IsA("RemoteFunction")) then
+        return
+    end
+    local nameKey = keyOf(instance.Name)
+    local bucket = RemoteIndex.ByName[nameKey]
+    if not bucket then
+        return
+    end
+    for index = #bucket, 1, -1 do
+        if bucket[index] == instance or not bucket[index].Parent then
+            table.remove(bucket, index)
+        end
+    end
+    if #bucket == 0 then
+        RemoteIndex.ByName[nameKey] = nil
+    end
+end
+
+local function indexRemoteRoot(root)
+    if not root then
+        return
+    end
+    table.insert(RemoteIndex.Roots, root)
+    for _, descendant in ipairs(root:GetDescendants()) do
+        indexRemote(descendant)
+    end
+    keepConnection(root.DescendantAdded:Connect(indexRemote))
+    keepConnection(root.DescendantRemoving:Connect(unindexRemote))
+end
+
+indexRemoteRoot(ReplicatedStorage)
+
+local function remoteByNames(names, expectedClass)
+    for _, name in ipairs(names) do
+        local bucket = RemoteIndex.ByName[keyOf(name)]
+        if bucket then
+            for _, candidate in ipairs(bucket) do
+                if candidate.Parent and (not expectedClass or candidate:IsA(expectedClass)) then
+                    return candidate
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local function waitForRemote(names, expectedClass, timeout)
+    local found = remoteByNames(names, expectedClass)
+    if found then
+        return found
+    end
+    local ok, result = waitForCondition(function()
+        return remoteByNames(names, expectedClass)
+    end, timeout or REMOTE_TIMEOUT, 0.10)
+    return ok and result or nil
+end
+
+local function callRemote(remote, argumentSets)
+    if not remote then
+        return false, "Remote is missing"
+    end
+    local lastFailure = "No argument set succeeded"
+    for _, arguments in ipairs(argumentSets) do
+        local ok, result = pcall(function()
+            if remote:IsA("RemoteFunction") then
+                return remote:InvokeServer(table.unpack(arguments))
+            end
+            remote:FireServer(table.unpack(arguments))
+            return true
+        end)
+        if ok and result ~= false then
+            return true, result
+        end
+        lastFailure = tostring(result)
+    end
+    return false, lastFailure
+end
+
+-- Unit registry --------------------------------------------------------------
+
+local UnitRegistry = {
+    Entries = {},
+    AliasToCanonical = {},
+    ImageToCanonical = {},
+    TemplateToCanonical = {},
+    Count = 0,
+}
+
+local function registerUnitAlias(entry, alias)
+    local normalized = keyOf(alias)
+    if normalized == "" then
+        return
+    end
+    entry.Aliases[normalized] = true
+    UnitRegistry.AliasToCanonical[normalized] = entry.CanonicalName
+end
+
+local function ensureUnitEntry(canonicalName)
+    local canonical = trim(canonicalName)
+    if canonical == "" then
+        return nil
+    end
+    local existing = UnitRegistry.Entries[canonical]
+    if existing then
+        return existing
+    end
+    local entry = {
+        CanonicalName = canonical,
+        DisplayName = canonical,
+        TemplateName = canonical,
+        ImageId = "",
+        Aliases = {},
+        UpgradeTemplates = {},
+    }
+    UnitRegistry.Entries[canonical] = entry
+    UnitRegistry.Count = UnitRegistry.Count + 1
+    registerUnitAlias(entry, canonical)
+    return entry
+end
+
+local function absorbModuleTowers()
+    local module = ReplicatedStorage:FindFirstChild("Module_Towers")
+    if not module or not module:IsA("ModuleScript") then
+        return false
+    end
+    local ok, data = pcall(require, module)
+    if not ok or typeof(data) ~= "table" then
+        consoleWarn("Module_Towers could not be required.")
+        return false
+    end
+
+    for canonicalName, info in pairs(data) do
+        if typeof(canonicalName) == "string" and typeof(info) == "table" then
+            local entry = ensureUnitEntry(canonicalName)
+            if entry then
+                entry.DisplayName = trim(info.DisplayName or info.Name or info.TowerName or canonicalName)
+                entry.TemplateName = trim(info.TemplateName or info.Template or info.Model or canonicalName)
+                entry.ImageId = assetIdOf(info.Image or info.Icon or info.ImageId)
+                registerUnitAlias(entry, entry.DisplayName)
+                registerUnitAlias(entry, entry.TemplateName)
+                registerUnitAlias(entry, info.UnitName)
+                registerUnitAlias(entry, info.TowerName)
+                if entry.ImageId ~= "" then
+                    UnitRegistry.ImageToCanonical[entry.ImageId] = entry.CanonicalName
+                end
+                UnitRegistry.TemplateToCanonical[keyOf(entry.TemplateName)] = entry.CanonicalName
+            end
+        end
+    end
+    return true
+end
+
+local function absorbTowerTemplate(model)
+    if not model or not model:IsA("Model") then
+        return
+    end
+    local config = model:FindFirstChild("Config")
+    local canonical = trim(attributeOrValue(config, {"TowerName", "UnitName", "Name"}) or model.Name)
+    local entry = ensureUnitEntry(canonical)
+    if not entry then
+        return
+    end
+    registerUnitAlias(entry, model.Name)
+    UnitRegistry.TemplateToCanonical[keyOf(model.Name)] = entry.CanonicalName
+    entry.UpgradeTemplates[model.Name] = true
+
+    local upgrade = config and config:FindFirstChild("Upgrade")
+    if upgrade and upgrade:IsA("ObjectValue") and upgrade.Value then
+        entry.UpgradeTemplates[upgrade.Value.Name] = true
+        registerUnitAlias(entry, upgrade.Value.Name)
+        UnitRegistry.TemplateToCanonical[keyOf(upgrade.Value.Name)] = entry.CanonicalName
+    end
+end
+
+local function discoverTowerTemplates()
+    local roots = {
+        ReplicatedStorage:FindFirstChild("Towers"),
+        ReplicatedStorage:FindFirstChild("Units"),
+        ReplicatedStorage:FindFirstChild("TowerModels"),
+    }
+    for _, root in ipairs(roots) do
+        if root then
+            for _, child in ipairs(root:GetChildren()) do
+                absorbTowerTemplate(child)
+            end
+            keepConnection(root.ChildAdded:Connect(absorbTowerTemplate))
+        end
+    end
+end
+
+local function rebuildUnitRegistry()
+    table.clear(UnitRegistry.Entries)
+    table.clear(UnitRegistry.AliasToCanonical)
+    table.clear(UnitRegistry.ImageToCanonical)
+    table.clear(UnitRegistry.TemplateToCanonical)
+    UnitRegistry.Count = 0
+    absorbModuleTowers()
+    discoverTowerTemplates()
+end
+
+local function resolveUnit(value, image)
+    local text = trim(value)
+    if UnitRegistry.Entries[text] then
+        return UnitRegistry.Entries[text]
+    end
+    local canonical = UnitRegistry.AliasToCanonical[keyOf(text)]
+        or UnitRegistry.TemplateToCanonical[keyOf(text)]
+        or UnitRegistry.ImageToCanonical[assetIdOf(image)]
+    return canonical and UnitRegistry.Entries[canonical] or nil
+end
+
+rebuildUnitRegistry()
+
+-- Map and mode registries ----------------------------------------------------
+
+local ModeRegistry = {
+    Entries = {},
+    Aliases = {},
+}
+
+local function registerMode(canonical, displayName, aliases)
+    local canonicalName = trim(canonical)
+    if canonicalName == "" then
+        return nil
+    end
+    local entry = ModeRegistry.Entries[canonicalName]
+    if not entry then
+        entry = {
+            CanonicalName = canonicalName,
+            DisplayName = trim(displayName) ~= "" and trim(displayName) or canonicalName:gsub("Mode$", ""),
+            Aliases = {},
+        }
+        ModeRegistry.Entries[canonicalName] = entry
+    end
+    local function add(alias)
+        local normalized = keyOf(alias)
+        if normalized ~= "" then
+            entry.Aliases[normalized] = true
+            ModeRegistry.Aliases[normalized] = canonicalName
+        end
+    end
+    add(canonicalName)
+    add(entry.DisplayName)
+    for _, alias in ipairs(aliases or {}) do
+        add(alias)
+    end
+    return entry
+end
+
+local STATIC_MODES = {
+    {"EasyMode", "Easy", {"Easy"}},
+    {"MediumMode", "Medium", {"Medium"}},
+    {"HardMode", "Hard", {"Hard"}},
+    {"InsaneMode", "Insane", {"Insane"}},
+    {"NightmareMode", "Nightmare", {"Nightmare"}},
+    {"CrazyMode", "Crazy", {"Crazy"}},
+    {"BossRushMode", "Boss Rush", {"BossRush", "Boss Rush"}},
+    {"HotMode", "Hot", {"Hot"}},
+    {"HotterMode", "Hotter", {"Hotter"}},
+    {"CloveryMode", "Clovery", {"Clovery"}},
+    {"HardcoreMode", "Hardcore", {"Hardcore"}},
+    {"Event", "Event", {"EventMode"}},
+}
+for _, definition in ipairs(STATIC_MODES) do
+    registerMode(definition[1], definition[2], definition[3])
+end
+
+local function resolveMode(value)
+    local text = trim(value)
+    if text == "" or keyOf(text) == "any" or keyOf(text) == "unknown" then
+        return nil
+    end
+    if ModeRegistry.Entries[text] then
+        return ModeRegistry.Entries[text]
+    end
+    local canonical = ModeRegistry.Aliases[keyOf(text)]
+    if canonical then
+        return ModeRegistry.Entries[canonical]
+    end
+    if text:match("Mode$") then
+        return registerMode(text, text:gsub("Mode$", ""), {})
+    end
+    return registerMode(text .. "Mode", text, {text})
+end
+
+local MapRegistry = {
+    Entries = {},
+    Aliases = {},
+    Elevators = {},
+}
+
+local function registerMap(displayName, internalName, aliases, options)
+    local display = trim(displayName)
+    local internal = trim(internalName) ~= "" and trim(internalName) or display
+    if display == "" then
+        return nil
+    end
+    local key = keyOf(internal)
+    local entry = MapRegistry.Entries[key]
+    if not entry then
+        entry = {
+            DisplayName = display,
+            InternalName = internal,
+            ElevatorName = display,
+            Aliases = {},
+            SupportedModes = {},
+            IsEventMap = options and options.IsEventMap == true or false,
+            IsMapOnly = options and options.IsMapOnly == true or false,
+        }
+        MapRegistry.Entries[key] = entry
+    end
+    local function add(alias)
+        local normalized = keyOf(alias)
+        if normalized ~= "" then
+            entry.Aliases[normalized] = true
+            MapRegistry.Aliases[normalized] = key
+        end
+    end
+    add(display)
+    add(internal)
+    for _, alias in ipairs(aliases or {}) do
+        add(alias)
+    end
+    return entry
+end
+
+local STATIC_MAPS = {
+    {"Cameraman HQ", "Cameraman HQ"},
+    {"Desert", "Desert"},
+    {"Toilet City", "Toilet City"},
+    {"Toilet Fortress", "Toilet Fortress"},
+    {"Toilet HQ", "Toilet HQ"},
+    {"Palm Paradise", "Palm Paradise"},
+    {"Hot Summer Pool", "Hot Summer Pool", {"HotSummerPool"}},
+    {"Hotter Summer Pool", "Hotter Summer Pool", {"HotterSummerPool"}},
+    {"Lucky Campground", "Lucky Campground"},
+    {"Hardcore City", "Hardcore City"},
+    {"Hardcore HQ", "Hardcore HQ"},
+    {"Ruined Toilet HQ", "Ruined Toilet HQ"},
+    {"Summer Pool", "Summer Pool", {"SummerPool"}},
+    {"Cardboard Event", "Cardboard Event", {"Cardboard"}, {IsEventMap = true, IsMapOnly = true}},
+    {"True Void", "True Void", {}, {IsMapOnly = true}},
+    {"Valentine", "Valentine", {}, {IsEventMap = true, IsMapOnly = true}},
+}
+for _, definition in ipairs(STATIC_MAPS) do
+    registerMap(definition[1], definition[2], definition[3], definition[4])
+end
+
+local function resolveMap(value)
+    local text = trim(value)
+    if text == "" then
+        return nil
+    end
+    local key = MapRegistry.Aliases[keyOf(text)] or keyOf(text)
+    local existing = MapRegistry.Entries[key]
+    if existing then
+        return existing
+    end
+    return registerMap(text, text, {}, nil)
+end
+
+local function readTextObject(object)
+    if object:IsA("TextLabel") or object:IsA("TextButton") or object:IsA("TextBox") then
+        return trim(object.Text)
+    end
+    if object:IsA("StringValue") then
+        return trim(object.Value)
+    end
+    return ""
+end
+
+local function elevatorMapName(elevator)
+    for _, attributeName in ipairs({"Map", "MapName", "Title", "DisplayName"}) do
+        local attribute = elevator:GetAttribute(attributeName)
+        if typeof(attribute) == "string" and trim(attribute) ~= "" then
+            return trim(attribute)
+        end
+    end
+    for _, objectName in ipairs({"MapName", "mapName", "Map", "Title", "DisplayName"}) do
+        local object = elevator:FindFirstChild(objectName, true)
+        if object then
+            local text = readTextObject(object)
+            if text ~= "" then
+                return text
+            end
+        end
+    end
+    return trim(elevator.Name)
+end
+
+local function elevatorModeName(elevator)
+    for _, attributeName in ipairs({"Mode", "GameMode", "SelectedMode"}) do
+        local attribute = elevator:GetAttribute(attributeName)
+        if typeof(attribute) == "string" and trim(attribute) ~= "" then
+            return trim(attribute)
+        end
+    end
+    for _, objectName in ipairs({"Mode", "GameMode", "SelectedMode"}) do
+        local object = elevator:FindFirstChild(objectName, true)
+        if object then
+            local text = readTextObject(object)
+            if text ~= "" then
+                return text
+            end
+        end
+    end
+    return ""
+end
+
+local function elevatorPlayerCount(elevator)
+    for _, name in ipairs({"Players", "PlayerCount", "CurrentPlayers"}) do
+        local value = attributeOrValue(elevator, {name})
+        if asNumber(value) then
+            return asNumber(value)
+        end
+    end
+    local status = elevator:FindFirstChild("StatusGui", true) or elevator
+    for _, descendant in ipairs(status:GetDescendants()) do
+        if descendant:IsA("TextLabel") or descendant:IsA("TextButton") then
+            local current = tostring(descendant.Text):match("(%d+)%s*/%s*%d+")
+            if current then
+                return tonumber(current) or 0
+            end
+        end
+    end
+    return 0
+end
+
+local function elevatorIdentifier(elevator)
+    local config = elevator:FindFirstChild("Config")
+    return attributeOrValue(config, {"idk", "Id", "ID", "ElevatorId"})
+        or attributeOrValue(elevator, {"Id", "ID", "ElevatorId"})
+        or elevator.Name
+end
+
+local function elevatorPlatform(elevator)
+    local named = firstDescendant(elevator, {"TeleportPart", "Platform", "Floor", "Base"}, {"Part", "MeshPart", "UnionOperation"})
+    if named then
+        return named
+    end
+    local best, bestScore = nil, -math.huge
+    for _, descendant in ipairs(elevator:GetDescendants()) do
+        if descendant:IsA("BasePart") then
+            local score = descendant.Size.X * descendant.Size.Z
+            if descendant.CanCollide then
+                score = score + 1000
+            end
+            if descendant.Size.Y <= 5 then
+                score = score + 250
+            end
+            if score > bestScore then
+                best, bestScore = descendant, score
+            end
+        end
+    end
+    return best
+end
+
+local function scanElevator(elevator)
+    if not elevator or not elevator:IsA("Model") then
+        return nil
+    end
+    local mapName = elevatorMapName(elevator)
+    local mapEntry = resolveMap(mapName)
+    local modeName = elevatorModeName(elevator)
+    local modeEntry = resolveMode(modeName)
+    if mapEntry then
+        mapEntry.ElevatorName = mapName
+        if modeEntry then
+            mapEntry.SupportedModes[modeEntry.CanonicalName] = true
+        end
+    end
+    local record = {
+        Model = elevator,
+        Id = elevatorIdentifier(elevator),
+        Platform = elevatorPlatform(elevator),
+        Map = mapEntry,
+        Mode = modeEntry,
+        Players = elevatorPlayerCount(elevator),
+    }
+    MapRegistry.Elevators[elevator] = record
+    return record
+end
+
+local function bindElevatorFolder(folder)
+    if not folder then
+        return
+    end
+    for _, elevator in ipairs(folder:GetChildren()) do
+        scanElevator(elevator)
+    end
+    keepConnection(folder.ChildAdded:Connect(function(elevator)
+        task.defer(scanElevator, elevator)
+    end))
+    keepConnection(folder.ChildRemoved:Connect(function(elevator)
+        MapRegistry.Elevators[elevator] = nil
+    end))
+end
+
+local function currentElevatorFolder()
+    local lobby = workspace:FindFirstChild("LOBBY_")
+    return lobby and lobby:FindFirstChild("Elevators") or nil
+end
+
+bindElevatorFolder(currentElevatorFolder())
+keepConnection(workspace.ChildAdded:Connect(function(child)
+    if child.Name == "LOBBY_" then
+        local elevators = child:WaitForChild("Elevators", 20)
+        bindElevatorFolder(elevators)
+    end
+end))
+
+-- Live game state ------------------------------------------------------------
+
+local CachedGui = {
+    DeckContainer = nil,
+    SkipButton = nil,
+    AbilityButton = nil,
+}
+
+local function infoFolder()
+    return workspace:FindFirstChild("Info")
+end
+
+local function currentMapName()
+    local info = infoFolder()
+    return trim(attributeOrValue(info, {"Map", "MapName"}) or "Unknown")
+end
+
+local function currentModeName()
+    local info = infoFolder()
+    return trim(attributeOrValue(info, {"Mode", "GameMode", "SelectedMode"}) or "Unknown")
+end
+
+local function currentWaveNumber()
+    return asNumber(attributeOrValue(infoFolder(), {"Wave"})) or 0
+end
+
+local function currentGameTimeText()
+    local value = attributeOrValue(infoFolder(), {"Time", "Timer"})
+    return value ~= nil and tostring(value) or "Unknown"
+end
+
+local function currentSpeedNumber()
+    local value = attributeOrValue(infoFolder(), {"Speed", "GameSpeed", "TimeScale"})
+    return asNumber(value) or State.Speed or 1
+end
+
+local function currentBalanceNumber()
+    local gold = LocalPlayer:FindFirstChild("Gold")
+    if gold and gold:IsA("ValueBase") then
+        return asNumber(gold.Value) or 0
+    end
+    for _, rootName in ipairs({"GameGui", "Main"}) do
+        local root = PlayerGui:FindFirstChild(rootName)
+        if root then
+            local label = firstDescendant(root, {"Gold", "Cash", "Money", "Balance"}, {"TextLabel", "TextButton", "IntValue", "NumberValue"})
+            if label then
+                if label:IsA("ValueBase") then
+                    return asNumber(label.Value) or 0
+                end
+                local numeric = tostring(label.Text):gsub("[^%d%.%-]", "")
+                return tonumber(numeric) or 0
+            end
+        end
+    end
+    return 0
+end
+
+local function locateDeckContainer()
+    if CachedGui.DeckContainer and CachedGui.DeckContainer.Parent then
+        return CachedGui.DeckContainer
+    end
+    local candidates = {
+        PlayerGui:FindFirstChild("Main"),
+        PlayerGui:FindFirstChild("GameGui"),
+    }
+    for _, root in ipairs(candidates) do
+        if root then
+            local slots = root:FindFirstChild("Slots", true)
+            if slots and slots:FindFirstChild("Slot1") then
+                CachedGui.DeckContainer = slots
+                return slots
+            end
+        end
+    end
+    for _, descendant in ipairs(PlayerGui:GetDescendants()) do
+        if descendant.Name == "Slots" and descendant:FindFirstChild("Slot1") then
+            CachedGui.DeckContainer = descendant
+            return descendant
+        end
+    end
+    return nil
+end
+
+local function slotImage(slot)
+    if slot:IsA("ImageLabel") or slot:IsA("ImageButton") then
+        if slot.Image ~= "" then
+            return slot.Image
+        end
+    end
+    local preferred = slot:FindFirstChild("IconImage", true)
+    if preferred and (preferred:IsA("ImageLabel") or preferred:IsA("ImageButton")) and preferred.Image ~= "" then
+        return preferred.Image
+    end
+    for _, descendant in ipairs(slot:GetDescendants()) do
+        if (descendant:IsA("ImageLabel") or descendant:IsA("ImageButton")) and descendant.Image ~= "" then
+            if not keyOf(descendant.Name):find("shiny", 1, true) then
+                return descendant.Image
+            end
+        end
+    end
+    return ""
+end
+
+local function slotUnitName(slot, image)
+    local direct = attributeOrValue(slot, {"TowerName", "UnitName", "DisplayName"})
+    if typeof(direct) == "string" and trim(direct) ~= "" then
+        return trim(direct)
+    end
+    local resolved = resolveUnit("", image)
+    if resolved then
+        return resolved.CanonicalName
+    end
+    for _, descendant in ipairs(slot:GetDescendants()) do
+        if descendant:IsA("StringValue") then
+            local nameKey = keyOf(descendant.Name)
+            if nameKey:find("tower", 1, true) or nameKey:find("unit", 1, true) then
+                if trim(descendant.Value) ~= "" then
+                    return trim(descendant.Value)
+                end
+            end
+        end
+    end
+    return ""
+end
+
+local function captureLoadout()
+    local container = locateDeckContainer()
+    local deck = {}
+    if container then
+        for slotIndex = 1, 6 do
+            local slot = container:FindFirstChild("Slot" .. slotIndex)
+            if slot then
+                local image = slotImage(slot)
+                local name = slotUnitName(slot, image)
+                if name ~= "" then
+                    local resolved = resolveUnit(name, image)
+                    deck[slotIndex] = resolved and resolved.CanonicalName or name
+                end
+            end
+        end
+    end
+    State.Loadout = deck
+    return deck
+end
+
+local function formatLoadout(deck)
+    local values = {}
+    for index = 1, 6 do
+        if deck[index] and trim(deck[index]) ~= "" then
+            table.insert(values, tostring(index) .. ": " .. tostring(deck[index]))
+        end
+    end
+    return #values > 0 and table.concat(values, " | ") or "Unavailable"
+end
+
+local function refreshLiveState()
+    State.Map = currentMapName()
+    State.Mode = currentModeName()
+    State.Wave = currentWaveNumber()
+    State.GameTime = currentGameTimeText()
+    State.Balance = currentBalanceNumber()
+    State.Speed = currentSpeedNumber()
+    captureLoadout()
+
+    setUiLabel("CurrentMap", "Current map: " .. State.Map)
+    setUiLabel("CurrentMode", "Current mode: " .. State.Mode)
+    setUiLabel("Wave", "Wave: " .. tostring(State.Wave))
+    setUiLabel("GameTime", "Time: " .. State.GameTime .. " (diagnostic only)")
+    setUiLabel("Balance", "Money: $" .. tostring(State.Balance))
+    setUiLabel("Speed", "Current speed: x" .. tostring(State.Speed))
+    setUiLabel("Loadout", "Detected loadout: " .. formatLoadout(State.Loadout))
+    setUiLabel("RequestedMap", "Requested map: " .. State.RequestedMap)
+    setUiLabel("ResolvedMap", "Resolved map: " .. State.ResolvedMap)
+    setUiLabel("RequestedMode", "Requested mode: " .. State.RequestedMode)
+    setUiLabel("ResolvedMode", "Resolved mode: " .. State.ResolvedMode)
+    setUiLabel("SelectedElevator", "Selected elevator: " .. State.SelectedElevator)
+    setUiLabel("ElevatorPlayers", "Players: " .. tostring(State.ElevatorPlayers))
+    setUiLabel("EntryConfirmed", "Entry confirmed: " .. tostring(State.EntryConfirmed))
+    setUiLabel("ModeConfirmed", "Mode confirmed: " .. tostring(State.ModeConfirmed))
+end
+
+-- Strategy schema ------------------------------------------------------------
+
+local ACTION_TYPES = {
+    Place = true,
+    Upgrade = true,
+    Sell = true,
+    Target = true,
+    Skip = true,
+    Speed = true,
+    Ability = true,
+}
+
+local function actionPosition(action)
+    if typeof(action.Position) == "table" then
+        local x = asNumber(action.Position.X or action.Position[1])
+        local y = asNumber(action.Position.Y or action.Position[2])
+        local z = asNumber(action.Position.Z or action.Position[3])
+        if x and y and z then
+            return Vector3.new(x, y, z)
+        end
+    end
+    if typeof(action.CFrame) == "table" and #action.CFrame >= 3 then
+        local x = asNumber(action.CFrame[1])
+        local y = asNumber(action.CFrame[2])
+        local z = asNumber(action.CFrame[3])
+        if x and y and z then
+            return Vector3.new(x, y, z)
+        end
+    end
+    return nil
+end
+
+local function actionCFrame(action)
+    if typeof(action.CFrame) == "table" then
+        local values = {}
+        for index = 1, math.min(#action.CFrame, 12) do
+            values[index] = asNumber(action.CFrame[index])
+        end
+        if #action.CFrame >= 12 then
+            for index = 1, 12 do
+                if not values[index] then
+                    return nil
+                end
+            end
+            return CFrame.new(table.unpack(values, 1, 12))
+        end
+        if #action.CFrame >= 3 and values[1] and values[2] and values[3] then
+            return CFrame.new(values[1], values[2], values[3])
+        end
+    end
+    local position = actionPosition(action)
+    return position and CFrame.new(position) or nil
+end
+
+local function normalizeStrategy(strategy)
+    if typeof(strategy) ~= "table" then
+        return nil
+    end
+    local copy = tableCopy(strategy)
+    copy.FormatVersion = asNumber(copy.FormatVersion) or asNumber(copy.Metadata and copy.Metadata.FormatVersion) or 1
+    copy.ExecutionMode = EXECUTION_MODE
+    copy.Map = trim(copy.Map or (copy.Metadata and copy.Metadata.Map))
+    copy.Mode = trim(copy.Mode or (copy.Metadata and copy.Metadata.Mode))
+    copy.Loadout = typeof(copy.Loadout) == "table" and copy.Loadout or copy.Deck
+    copy.Actions = typeof(copy.Actions) == "table" and copy.Actions or {}
+
+    for index, action in ipairs(copy.Actions) do
+        if typeof(action) == "table" then
+            action.ActionId = asNumber(action.ActionId) or index
+            if action.RecordedWave == nil and action.Wave ~= nil then
+                action.RecordedWave = action.Wave
+            end
+            action.Time = nil
+            action.Timing = nil
+            action.Wave = nil
+        end
+    end
+    copy.ActionCount = #copy.Actions
+    return copy
+end
+
+local function validateStrategy(strategy)
+    local errors = {}
+    local warnings = {}
+    local normalized = normalizeStrategy(strategy)
+    if not normalized then
+        return false, {"Strategy must be a table."}, warnings, nil
+    end
+
+    local mapEntry = resolveMap(normalized.Map)
+    if not mapEntry then
+        table.insert(errors, "Map is missing.")
+    end
+
+    local modeEntry = resolveMode(normalized.Mode)
+    if normalized.Mode ~= "" and not modeEntry then
+        table.insert(errors, "Mode could not be resolved.")
+    end
+    if mapEntry and not mapEntry.IsMapOnly and normalized.Mode == "" then
+        table.insert(errors, "Mode is required for this map.")
+    end
+
+    if typeof(normalized.Loadout) ~= "table" then
+        table.insert(errors, "Loadout is missing.")
+    else
+        local populated = 0
+        for slotIndex = 1, 6 do
+            local unitName = normalized.Loadout[slotIndex]
+            if unitName ~= nil and trim(unitName) ~= "" then
+                populated = populated + 1
+                if not resolveUnit(unitName) then
+                    table.insert(errors, "Unknown loadout unit in slot " .. slotIndex .. ": " .. tostring(unitName))
+                end
+            end
+        end
+        if populated == 0 then
+            table.insert(errors, "Loadout has no units.")
+        end
+    end
+
+    if typeof(normalized.Actions) ~= "table" then
+        table.insert(errors, "Actions must be a table.")
+        return false, errors, warnings, normalized
+    end
+
+    if strategy.ActionCount ~= nil and asNumber(strategy.ActionCount) ~= #normalized.Actions then
+        table.insert(errors, "ActionCount does not match Actions.")
+    end
+
+    local actionIds = {}
+    local placed = {}
+    local sold = {}
+    for index, action in ipairs(normalized.Actions) do
+        if typeof(action) ~= "table" then
+            table.insert(errors, "Action #" .. index .. " is not a table.")
+        else
+            local actionType = trim(action.Type)
+            if not ACTION_TYPES[actionType] then
+                table.insert(errors, "Action #" .. index .. " has unsupported type " .. tostring(action.Type) .. ".")
+            end
+
+            local actionId = asNumber(action.ActionId)
+            if not actionId then
+                table.insert(errors, "Action #" .. index .. " has invalid ActionId.")
+            elseif actionIds[actionId] then
+                table.insert(errors, "Duplicate ActionId " .. actionId .. ".")
+            else
+                actionIds[actionId] = true
+            end
+
+            local originalAction = typeof(strategy.Actions) == "table" and strategy.Actions[index] or nil
+            if typeof(originalAction) == "table"
+                and (originalAction.Time ~= nil or originalAction.Timing ~= nil or originalAction.Wave ~= nil)
+            then
+                table.insert(warnings, "Legacy timing fields on action #" .. index .. " are ignored.")
+            end
+
+            if actionType == "Place" then
+                local unitId = asNumber(action.UnitId)
+                if not unitId then
+                    table.insert(errors, "Place action #" .. index .. " has invalid UnitId.")
+                elseif placed[unitId] then
+                    table.insert(errors, "UnitId " .. unitId .. " is placed more than once.")
+                else
+                    placed[unitId] = index
+                end
+                if not resolveUnit(action.Unit or action.Template) then
+                    table.insert(errors, "Place action #" .. index .. " has an unknown unit.")
+                end
+                if not actionCFrame(action) then
+                    table.insert(errors, "Place action #" .. index .. " has invalid CFrame/Position.")
+                end
+            elseif actionType == "Upgrade" or actionType == "Sell" or actionType == "Target" or actionType == "Ability" then
+                local unitId = asNumber(action.UnitId)
+                if not unitId then
+                    table.insert(errors, actionType .. " action #" .. index .. " has invalid UnitId.")
+                elseif not placed[unitId] then
+                    table.insert(errors, actionType .. " action #" .. index .. " appears before Place for UnitId " .. unitId .. ".")
+                elseif sold[unitId] then
+                    table.insert(errors, actionType .. " action #" .. index .. " appears after Sell for UnitId " .. unitId .. ".")
+                end
+                if actionType == "Sell" and unitId then
+                    sold[unitId] = true
+                elseif actionType == "Target" and trim(action.Mode) == "" then
+                    table.insert(errors, "Target action #" .. index .. " has no Mode.")
+                end
+            elseif actionType == "Speed" and not asNumber(action.Speed) then
+                table.insert(errors, "Speed action #" .. index .. " has invalid Speed.")
+            end
+
+            if action.Price ~= nil and not asNumber(action.Price) then
+                table.insert(errors, "Action #" .. index .. " has invalid Price.")
+            end
+        end
+    end
+
+    if normalized.FormatVersion > FORMAT_VERSION then
+        table.insert(warnings, "Strategy version " .. normalized.FormatVersion .. " is newer than this hub; known actions will still be attempted.")
+    end
+    return #errors == 0, errors, warnings, normalized
+end
+
+local function strategyDiagnostics(strategy)
+    local normalized = normalizeStrategy(strategy)
+    local result = {
+        Counts = {Place = 0, Upgrade = 0, Sell = 0, Target = 0, Skip = 0, Speed = 0, Ability = 0},
+        UnknownUnits = {},
+        UnknownModes = {},
+        LostUnitIds = {},
+        Conflicts = {},
+        LegacyTimingFields = 0,
+        ActionOrderValid = true,
+    }
+    if not normalized then
+        table.insert(result.Conflicts, "Strategy is invalid.")
+        result.ActionOrderValid = false
+        return result
+    end
+
+    if normalized.Mode ~= "" and not resolveMode(normalized.Mode) then
+        table.insert(result.UnknownModes, normalized.Mode)
+    end
+    local placed = {}
+    local sold = {}
+    local actionIds = {}
+    for index, action in ipairs(normalized.Actions) do
+        if typeof(action) ~= "table" then
+            table.insert(result.Conflicts, "Action #" .. index .. " is invalid.")
+            result.ActionOrderValid = false
+        else
+            if result.Counts[action.Type] ~= nil then
+                result.Counts[action.Type] = result.Counts[action.Type] + 1
+            end
+            local originalAction = typeof(strategy.Actions) == "table" and strategy.Actions[index] or nil
+            if typeof(originalAction) == "table"
+                and (originalAction.Time ~= nil or originalAction.Timing ~= nil or originalAction.Wave ~= nil)
+            then
+                result.LegacyTimingFields = result.LegacyTimingFields + 1
+            end
+            local actionId = asNumber(action.ActionId) or index
+            if actionIds[actionId] then
+                table.insert(result.Conflicts, "Duplicate ActionId " .. actionId)
+            end
+            actionIds[actionId] = true
+
+            local unitId = asNumber(action.UnitId)
+            if action.Type == "Place" then
+                if unitId and placed[unitId] then
+                    table.insert(result.Conflicts, "Duplicate Place UnitId " .. unitId)
+                end
+                if unitId then
+                    placed[unitId] = true
+                end
+                if not resolveUnit(action.Unit or action.Template) then
+                    table.insert(result.UnknownUnits, tostring(action.Unit or action.Template or index))
+                end
+            elseif action.Type == "Upgrade" or action.Type == "Sell" or action.Type == "Target" or action.Type == "Ability" then
+                if not unitId or not placed[unitId] then
+                    table.insert(result.LostUnitIds, unitId or ("Action #" .. index))
+                    result.ActionOrderValid = false
+                elseif sold[unitId] then
+                    table.insert(result.Conflicts, action.Type .. " after Sell for UnitId " .. unitId)
+                    result.ActionOrderValid = false
+                end
+                if action.Type == "Sell" and unitId then
+                    sold[unitId] = true
+                end
+            end
+        end
+    end
+    return result
+end
+
+local function diagnosticsText(diagnostics)
+    local counts = diagnostics.Counts
+    return table.concat({
+        "Execution mode: " .. EXECUTION_MODE,
+        "Place: " .. counts.Place .. " | Upgrade: " .. counts.Upgrade .. " | Sell: " .. counts.Sell,
+        "Target: " .. counts.Target .. " | Skip: " .. counts.Skip .. " | Speed: " .. counts.Speed,
+        "Ability: " .. counts.Ability,
+        "Unknown units: " .. #diagnostics.UnknownUnits,
+        "Unknown modes: " .. #diagnostics.UnknownModes,
+        "Lost UnitIds: " .. #diagnostics.LostUnitIds,
+        "Conflicts: " .. #diagnostics.Conflicts,
+        "Legacy timing fields ignored: " .. diagnostics.LegacyTimingFields,
+        "Action order valid: " .. (diagnostics.ActionOrderValid and "Yes" or "No"),
+    }, " | ")
+end
+
+-- Tower identity helpers -----------------------------------------------------
+
+local function towersFolder()
+    return workspace:FindFirstChild("Towers")
+end
+
+local function towerConfig(tower)
+    if not tower then
+        return nil
+    end
+    return tower:FindFirstChild("Config")
+end
+
+local function towerOwnerMatches(tower)
+    local config = towerConfig(tower)
+    local owner = attributeOrValue(config, {"Owner", "Player", "OwnerName", "OwnerUserId", "UserId"})
+        or attributeOrValue(tower, {"Owner", "Player", "OwnerName", "OwnerUserId", "UserId"})
+    if owner == nil then
+        local declaredPlayers = asNumber(attributeOrValue(infoFolder(), {"Players", "PlayerCount", "CurrentPlayers"}))
+        local activePlayers = declaredPlayers or #Players:GetPlayers()
+        return activePlayers <= 1
+    end
+    if typeof(owner) == "Instance" and owner:IsA("Player") then
+        return owner == LocalPlayer
+    end
+    if asNumber(owner) then
+        return asNumber(owner) == LocalPlayer.UserId
+    end
+    return tostring(owner) == LocalPlayer.Name
+end
+
+local function towerName(tower)
+    local config = towerConfig(tower)
+    return trim(attributeOrValue(config, {"TowerName", "UnitName", "DisplayName"}) or tower.Name)
+end
+
+local function towerLevel(tower)
+    return asNumber(attributeOrValue(towerConfig(tower), {"Level", "UpgradeLevel"})) or 1
+end
+
+local function towerPrice(tower)
+    return asNumber(attributeOrValue(towerConfig(tower), {"Price", "Cost", "UpgradePrice"})) or 0
+end
+
+local function towerTargetMode(tower)
+    return trim(attributeOrValue(towerConfig(tower), {"TargetMode", "Mode"}) or "First")
+end
+
+local function towerSnapshot(tower)
+    if not tower or not tower:IsA("Model") or not towerOwnerMatches(tower) then
+        return nil
+    end
+    local pivot = safePivot(tower)
+    if not pivot then
+        return nil
+    end
+    local components = {pivot:GetComponents()}
+    return {
+        Model = tower,
+        Name = towerName(tower),
+        Template = tower.Name,
+        Level = towerLevel(tower),
+        Price = towerPrice(tower),
+        TargetMode = towerTargetMode(tower),
+        Position = pivot.Position,
+        Components = components,
+        CapturedAt = os.clock(),
+    }
+end
+
+local function snapshotsMatchUpgrade(oldSnapshot, newSnapshot)
+    if not oldSnapshot or not newSnapshot then
+        return false
+    end
+    if (oldSnapshot.Position - newSnapshot.Position).Magnitude > TOWER_POSITION_TOLERANCE then
+        return false
+    end
+    local oldUnit = resolveUnit(oldSnapshot.Name or oldSnapshot.Template)
+    local newUnit = resolveUnit(newSnapshot.Name or newSnapshot.Template)
+    local sameCanonical = oldUnit and newUnit and oldUnit.CanonicalName == newUnit.CanonicalName
+    local levelIncreased = newSnapshot.Level > oldSnapshot.Level
+    local templateChanged = newSnapshot.Template ~= oldSnapshot.Template
+    return sameCanonical and (levelIncreased or templateChanged)
+end
+
+local function findTowerByPosition(position, expectedName, excluded)
+    local folder = towersFolder()
+    if not folder then
+        return nil
+    end
+    local expected = resolveUnit(expectedName)
+    local best, bestDistance = nil, math.huge
+    for _, tower in ipairs(folder:GetChildren()) do
+        if tower:IsA("Model") and tower ~= excluded and towerOwnerMatches(tower) then
+            local pivot = safePivot(tower)
+            if pivot then
+                local candidateUnit = resolveUnit(towerName(tower) or tower.Name)
+                local nameMatches = not expected or (candidateUnit and candidateUnit.CanonicalName == expected.CanonicalName)
+                local distance = (pivot.Position - position).Magnitude
+                if nameMatches and distance < bestDistance and distance <= TOWER_POSITION_TOLERANCE then
+                    best, bestDistance = tower, distance
+                end
+            end
+        end
+    end
+    return best
+end
+
+-- Recorder -------------------------------------------------------------------
+
+local Recorder = {
+    Active = false,
+    Actions = {},
+    NextActionId = 1,
+    NextUnitId = 1,
+    UnitIdByTower = {},
+    SnapshotByTower = {},
+    PendingRemoval = {},
+    TargetConnections = {},
+    LevelConnections = {},
+    IgnoredExisting = {},
+    StartedMap = "",
+    StartedMode = "",
+    LastSkipWave = nil,
+    LastSpeed = nil,
+    LastUpgradeAt = {},
+    LastAutosaveCount = 0,
+    LastAutosaveAt = 0,
+}
+
+local function rounded(value, digits)
+    local scale = 10 ^ (digits or 0)
+    return math.round(value * scale) / scale
+end
+
+local function vectorTable(vector)
+    return {
+        X = rounded(vector.X, 6),
+        Y = rounded(vector.Y, 6),
+        Z = rounded(vector.Z, 6),
+    }
+end
+
+local function cframeTable(cframe)
+    local values = {cframe:GetComponents()}
+    for index, value in ipairs(values) do
+        values[index] = rounded(value, 6)
+    end
+    return values
+end
+
+local function appendRecordedAction(action)
+    if not Recorder.Active or typeof(action) ~= "table" then
+        return false
+    end
+    action.ActionId = Recorder.NextActionId
+    Recorder.NextActionId = Recorder.NextActionId + 1
+    action.RecordedWave = currentWaveNumber()
+    action.Time = nil
+    action.Timing = nil
+    action.Wave = nil
+    table.insert(Recorder.Actions, action)
+    setRecorderStatus("Recording | Actions: " .. #Recorder.Actions)
+    return true
+end
+
+local function disconnectTargetWatcher(tower)
+    local connection = Recorder.TargetConnections[tower]
+    if connection then
+        connection:Disconnect()
+        Recorder.TargetConnections[tower] = nil
+    end
+end
+
+local function watchTowerTarget(tower)
+    disconnectTargetWatcher(tower)
+    local config = towerConfig(tower)
+    local targetValue = config and config:FindFirstChild("TargetMode")
+    if not targetValue or not targetValue:IsA("ValueBase") then
+        return
+    end
+    Recorder.TargetConnections[tower] = keepConnection(targetValue.Changed:Connect(function(value)
+        if not Recorder.Active then
+            return
+        end
+        local unitId = Recorder.UnitIdByTower[tower]
+        if not unitId then
+            return
+        end
+        appendRecordedAction({
+            Type = "Target",
+            UnitId = unitId,
+            Mode = tostring(value),
+        })
+    end))
+end
+
+local function mayRecordUpgrade(unitId)
+    local last = Recorder.LastUpgradeAt[unitId]
+    if last and os.clock() - last < 0.75 then
+        return false
+    end
+    Recorder.LastUpgradeAt[unitId] = os.clock()
+    return true
+end
+
+local function disconnectLevelWatcher(tower)
+    local connection = Recorder.LevelConnections[tower]
+    if connection then
+        connection:Disconnect()
+        Recorder.LevelConnections[tower] = nil
+    end
+end
+
+local function watchTowerLevel(tower)
+    disconnectLevelWatcher(tower)
+    local config = towerConfig(tower)
+    local levelValue = config and (config:FindFirstChild("Level") or config:FindFirstChild("UpgradeLevel"))
+    if not levelValue or not levelValue:IsA("ValueBase") then
+        return
+    end
+    local previousLevel = asNumber(levelValue.Value) or towerLevel(tower)
+    Recorder.LevelConnections[tower] = keepConnection(levelValue.Changed:Connect(function(value)
+        local newLevel = asNumber(value) or towerLevel(tower)
+        if Recorder.Active and newLevel > previousLevel then
+            local unitId = Recorder.UnitIdByTower[tower]
+            local oldSnapshot = Recorder.SnapshotByTower[tower]
+            local newSnapshot = towerSnapshot(tower)
+            if unitId and newSnapshot then
+                if mayRecordUpgrade(unitId) then
+                    appendRecordedAction({
+                        Type = "Upgrade",
+                        UnitId = unitId,
+                        PreviousUnit = oldSnapshot and oldSnapshot.Name or newSnapshot.Name,
+                        Unit = newSnapshot.Name,
+                        PreviousTemplate = oldSnapshot and oldSnapshot.Template or newSnapshot.Template,
+                        Template = newSnapshot.Template,
+                        Level = newLevel,
+                        Price = math.max(0, newSnapshot.Price),
+                    })
+                end
+                Recorder.SnapshotByTower[tower] = newSnapshot
+            end
+        end
+        previousLevel = newLevel
+    end))
+end
+
+local function assignRecorderUnitId(tower, preferred)
+    local existing = Recorder.UnitIdByTower[tower]
+    if existing then
+        return existing
+    end
+    local unitId = asNumber(preferred) or Recorder.NextUnitId
+    Recorder.NextUnitId = math.max(Recorder.NextUnitId, unitId + 1)
+    Recorder.UnitIdByTower[tower] = unitId
+    return unitId
+end
+
+local function recordPlaceForTower(tower, snapshot)
+    local unitId = assignRecorderUnitId(tower)
+    local resolved = resolveUnit(snapshot.Name or snapshot.Template)
+    appendRecordedAction({
+        Type = "Place",
+        UnitId = unitId,
+        Unit = resolved and resolved.CanonicalName or snapshot.Name,
+        Template = snapshot.Template,
+        Position = vectorTable(snapshot.Position),
+        CFrame = snapshot.Components,
+        Price = snapshot.Price,
+    })
+end
+
+local function recordUpgradeReplacement(oldTower, newTower, oldSnapshot, newSnapshot)
+    local unitId = Recorder.UnitIdByTower[oldTower]
+    if not unitId then
+        return false
+    end
+    Recorder.UnitIdByTower[oldTower] = nil
+    Recorder.UnitIdByTower[newTower] = unitId
+    Recorder.SnapshotByTower[newTower] = newSnapshot
+    Recorder.PendingRemoval[oldTower] = nil
+    disconnectTargetWatcher(oldTower)
+    disconnectLevelWatcher(oldTower)
+    watchTowerTarget(newTower)
+    watchTowerLevel(newTower)
+    if mayRecordUpgrade(unitId) then
+        appendRecordedAction({
+            Type = "Upgrade",
+            UnitId = unitId,
+            PreviousUnit = oldSnapshot.Name,
+            Unit = newSnapshot.Name,
+            PreviousTemplate = oldSnapshot.Template,
+            Template = newSnapshot.Template,
+            Level = newSnapshot.Level,
+            Price = math.max(0, newSnapshot.Price),
+        })
+    end
+    return true
+end
+
+local function handleTowerAdded(tower)
+    if not tower:IsA("Model") then
+        return
+    end
+    local snapshot = towerSnapshot(tower)
+    if not snapshot then
+        return
+    end
+
+    for removedTower, pending in pairs(Recorder.PendingRemoval) do
+        if os.clock() - pending.RemovedAt <= UPGRADE_REPLACEMENT_WINDOW
+            and snapshotsMatchUpgrade(pending.Snapshot, snapshot)
+        then
+            if Recorder.Active and recordUpgradeReplacement(removedTower, tower, pending.Snapshot, snapshot) then
+                return
+            end
+        end
+    end
+
+    Recorder.SnapshotByTower[tower] = snapshot
+    if Recorder.Active and not Recorder.IgnoredExisting[tower] then
+        recordPlaceForTower(tower, snapshot)
+    else
+        assignRecorderUnitId(tower)
+    end
+    watchTowerTarget(tower)
+    watchTowerLevel(tower)
+end
+
+local function finalizeRemoval(tower, token)
+    local pending = Recorder.PendingRemoval[tower]
+    if not pending or pending.Token ~= token then
+        return
+    end
+    Recorder.PendingRemoval[tower] = nil
+    disconnectTargetWatcher(tower)
+    disconnectLevelWatcher(tower)
+
+    if not Recorder.Active then
+        Recorder.UnitIdByTower[tower] = nil
+        Recorder.SnapshotByTower[tower] = nil
+        return
+    end
+
+    local info = infoFolder()
+    local ended = attributeOrValue(info, {"Ended", "GameEnded", "Finished", "MatchEnded"})
+    if ended == true or ended == 1 then
+        return
+    end
+
+    local unitId = Recorder.UnitIdByTower[tower]
+    if unitId then
+        appendRecordedAction({
+            Type = "Sell",
+            UnitId = unitId,
+            Unit = pending.Snapshot.Name,
+            Template = pending.Snapshot.Template,
+            SellValue = math.floor((pending.Snapshot.Price or 0) / 2),
+        })
+    end
+    Recorder.UnitIdByTower[tower] = nil
+    Recorder.SnapshotByTower[tower] = nil
+end
+
+local function handleTowerRemoving(tower)
+    local snapshot = Recorder.SnapshotByTower[tower] or towerSnapshot(tower)
+    if not snapshot then
+        return
+    end
+    local token = tostring(os.clock()) .. ":" .. tostring(tower)
+    Recorder.PendingRemoval[tower] = {
+        Snapshot = snapshot,
+        RemovedAt = os.clock(),
+        Token = token,
+    }
+    Runtime.DeferredTokens[token] = true
+    task.delay(UPGRADE_REPLACEMENT_WINDOW, function()
+        if Runtime.DeferredTokens[token] and runtimeAlive() then
+            Runtime.DeferredTokens[token] = nil
+            finalizeRemoval(tower, token)
+        end
+    end)
+end
+
+local function bindTowerFolder(folder)
+    if not folder then
+        return
+    end
+    for _, tower in ipairs(folder:GetChildren()) do
+        handleTowerAdded(tower)
+    end
+    keepConnection(folder.ChildAdded:Connect(handleTowerAdded))
+    keepConnection(folder.ChildRemoved:Connect(handleTowerRemoving))
+end
+
+bindTowerFolder(towersFolder())
+keepConnection(workspace.ChildAdded:Connect(function(child)
+    if child.Name == "Towers" then
+        bindTowerFolder(child)
+    end
+end))
+
+local function resetRecorderState()
+    Recorder.Actions = {}
+    Recorder.NextActionId = 1
+    Recorder.NextUnitId = 1
+    table.clear(Recorder.UnitIdByTower)
+    table.clear(Recorder.SnapshotByTower)
+    table.clear(Recorder.PendingRemoval)
+    table.clear(Recorder.IgnoredExisting)
+    Recorder.LastSkipWave = nil
+    Recorder.LastSpeed = nil
+    table.clear(Recorder.LastUpgradeAt)
+    Recorder.LastAutosaveCount = 0
+    Recorder.LastAutosaveAt = 0
+    for tower in pairs(Recorder.TargetConnections) do
+        disconnectTargetWatcher(tower)
+    end
+    for tower in pairs(Recorder.LevelConnections) do
+        disconnectLevelWatcher(tower)
+    end
+end
+
+local function startRecorder()
+    resetRecorderState()
+    Recorder.StartedMap = currentMapName()
+    Recorder.StartedMode = currentModeName()
+    local folder = towersFolder()
+    if folder then
+        for _, tower in ipairs(folder:GetChildren()) do
+            if tower:IsA("Model") and towerOwnerMatches(tower) then
+                Recorder.IgnoredExisting[tower] = true
+                local snapshot = towerSnapshot(tower)
+                if snapshot then
+                    Recorder.SnapshotByTower[tower] = snapshot
+                    assignRecorderUnitId(tower)
+                    watchTowerTarget(tower)
+                    watchTowerLevel(tower)
+                end
+            end
+        end
+    end
+    Recorder.Active = true
+    setRecorderStatus("Recording | Actions: 0")
+    console("Recorder started.")
+end
+
+local function stopRecorder()
+    Recorder.Active = false
+    setRecorderStatus("Stopped | Actions: " .. #Recorder.Actions)
+    console("Recorder stopped.")
+end
+
+local function bindSkipRecorderButton(object)
+    if not object or not (object:IsA("TextButton") or object:IsA("ImageButton")) then
+        return
+    end
+    if not keyOf(object.Name):find("skip", 1, true) then
+        return
+    end
+    if object:GetAttribute("HamsterR2SkipBound") then
+        return
+    end
+    object:SetAttribute("HamsterR2SkipBound", true)
+    keepConnection(object.Activated:Connect(function()
+        if not Recorder.Active then
+            return
+        end
+        local wave = currentWaveNumber()
+        if Recorder.LastSkipWave == wave then
+            return
+        end
+        Recorder.LastSkipWave = wave
+        appendRecordedAction({Type = "Skip"})
+    end))
+end
+
+local function bindAbilityRecorderButton(object)
+    if not object or not (object:IsA("TextButton") or object:IsA("ImageButton")) then
+        return
+    end
+    if not keyOf(object.Name):find("ability", 1, true) then
+        return
+    end
+    if object:GetAttribute("HamsterR2AbilityBound") then
+        return
+    end
+    object:SetAttribute("HamsterR2AbilityBound", true)
+    keepConnection(object.Activated:Connect(function()
+        if not Recorder.Active then
+            return
+        end
+        local selected = Environment.HamsterHubSelectedTower
+        local unitId = selected and Recorder.UnitIdByTower[selected]
+        if unitId then
+            appendRecordedAction({
+                Type = "Ability",
+                UnitId = unitId,
+                Ability = object.Name,
+            })
+        end
+    end))
+end
+
+for _, descendant in ipairs(PlayerGui:GetDescendants()) do
+    bindSkipRecorderButton(descendant)
+    bindAbilityRecorderButton(descendant)
+end
+keepConnection(PlayerGui.DescendantAdded:Connect(function(descendant)
+    bindSkipRecorderButton(descendant)
+    bindAbilityRecorderButton(descendant)
+end))
+
+local speedRemote = remoteByNames({"Speed", "SetSpeed", "ChangeSpeed"}, "RemoteEvent")
+if speedRemote then
+    keepConnection(speedRemote.OnClientEvent:Connect(function(first, second)
+        local speed = asNumber(second) or asNumber(first)
+        if speed then
+            State.Speed = speed
+            if Recorder.Active and Recorder.LastSpeed ~= speed then
+                Recorder.LastSpeed = speed
+                appendRecordedAction({Type = "Speed", Speed = speed})
+            end
+        end
+    end))
+end
+
+Environment.HamsterHubRecordAbility = function(tower, abilityName)
+    if not Recorder.Active then
+        return false
+    end
+    local unitId = tower and Recorder.UnitIdByTower[tower]
+    if not unitId then
+        return false
+    end
+    return appendRecordedAction({
+        Type = "Ability",
+        UnitId = unitId,
+        Ability = trim(abilityName) ~= "" and trim(abilityName) or "Ability",
+    })
+end
+
+local function serializeLuaValue(value, indentation)
+    local indent = indentation or 0
+    local prefix = string.rep("    ", indent)
+    local nextPrefix = string.rep("    ", indent + 1)
+    local valueType = typeof(value)
+    if valueType == "string" then
+        return string.format("%q", value)
+    elseif valueType == "number" or valueType == "boolean" then
+        return tostring(value)
+    elseif valueType ~= "table" then
+        return "nil"
+    end
+
+    local keys = {}
+    for key in pairs(value) do
+        table.insert(keys, key)
+    end
+    table.sort(keys, function(a, b)
+        if typeof(a) == typeof(b) then
+            return a < b
+        end
+        return typeof(a) < typeof(b)
+    end)
+
+    local lines = {"{"}
+    for _, key in ipairs(keys) do
+        local keyText
+        if typeof(key) == "number" then
+            keyText = "[" .. key .. "]"
+        elseif tostring(key):match("^[%a_][%w_]*$") then
+            keyText = tostring(key)
+        else
+            keyText = "[" .. string.format("%q", tostring(key)) .. "]"
+        end
+        table.insert(lines, nextPrefix .. keyText .. " = " .. serializeLuaValue(value[key], indent + 1) .. ",")
+    end
+    table.insert(lines, prefix .. "}")
+    return table.concat(lines, "\n")
+end
+
+local function recorderStrategy()
+    local deck = captureLoadout()
+    return {
+        FormatVersion = FORMAT_VERSION,
+        ExecutionMode = EXECUTION_MODE,
+        Map = Recorder.StartedMap ~= "" and Recorder.StartedMap or currentMapName(),
+        Mode = Recorder.StartedMode ~= "" and Recorder.StartedMode or currentModeName(),
+        AutoEnterMatch = true,
+        AutoTeleport = State.Settings.AutoTeleport,
+        Loadout = deck,
+        ActionCount = #Recorder.Actions,
+        Actions = tableCopy(Recorder.Actions),
+    }
+end
+
+local function strategyFileSource(strategy, autoStart)
+    return table.concat({
+        "local STRATEGY = " .. serializeLuaValue(strategy, 0),
+        "local environment = (typeof(getgenv) == \"function\" and getgenv()) or _G",
+        "environment.HamsterHubAutoexecStrategy = STRATEGY",
+        "if typeof(environment.HamsterHubAcceptStrategy) == \"function\" then",
+        "    environment.HamsterHubAcceptStrategy(STRATEGY, " .. tostring(autoStart == true) .. ")",
+        "end",
+        "return STRATEGY",
+        "",
+    }, "\n")
+end
+
+local function saveRecorder(path, autoStart)
+    local strategy = recorderStrategy()
+    local valid, errors, _, normalized = validateStrategy(strategy)
+    if not valid then
+        return false, table.concat(errors, " | ")
+    end
+    local ok, failure = FileSystem.write(path, strategyFileSource(normalized, autoStart))
+    if ok then
+        State.Strategy = normalized
+    end
+    return ok, failure
+end
+
+local function saveRecording()
+    local ok, failure = saveRecorder(STRATEGY_PATH, true)
+    if ok then
+        console("Successfully saved record to " .. STRATEGY_PATH)
+        setRecorderStatus("Saved | Actions: " .. #Recorder.Actions)
+    else
+        setLastError(failure, "Recorder Save")
+    end
+    return ok
+end
+
+local function saveAutosave()
+    if not Recorder.Active or #Recorder.Actions == 0 then
+        return
+    end
+    if Recorder.LastAutosaveCount == #Recorder.Actions and os.clock() - Recorder.LastAutosaveAt < 5 then
+        return
+    end
+    local ok = saveRecorder(AUTOSAVE_PATH, false)
+    if ok then
+        Recorder.LastAutosaveCount = #Recorder.Actions
+        Recorder.LastAutosaveAt = os.clock()
+    end
+end
+
+-- Next action overlay --------------------------------------------------------
+
+local Overlay = {
+    Gui = nil,
+    Label = nil,
+}
+
+local function createOverlay()
+    local old = PlayerGui:FindFirstChild("HamsterNextActionOverlay")
+    if old then
+        old:Destroy()
+    end
+
+    local gui = keepInstance(Instance.new("ScreenGui"))
+    gui.Name = "HamsterNextActionOverlay"
+    gui.ResetOnSpawn = false
+    gui.IgnoreGuiInset = true
+    gui.DisplayOrder = 1001
+    gui.Parent = PlayerGui
+
+    local label = Instance.new("TextLabel")
+    label.Name = "Status"
+    label.AnchorPoint = Vector2.new(0.5, 0)
+    label.Position = UDim2.new(0.5, 0, 0, 18)
+    label.Size = UDim2.fromOffset(520, 42)
+    label.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
+    label.BackgroundTransparency = 0.08
+    label.BorderSizePixel = 0
+    label.Font = Enum.Font.GothamBold
+    label.TextColor3 = Color3.fromRGB(245, 245, 248)
+    label.TextSize = 14
+    label.TextWrapped = true
+    label.Text = "Strategy Player: idle"
+    label.Parent = gui
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 8)
+    corner.Parent = label
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = Color3.fromRGB(183, 120, 255)
+    stroke.Transparency = 0.25
+    stroke.Parent = label
+
+    Overlay.Gui = gui
+    Overlay.Label = label
+end
+
+local function updateOverlay(text)
+    if not Overlay.Label or not Overlay.Label.Parent then
+        createOverlay()
+    end
+    Overlay.Label.Text = tostring(text)
+end
+
+createOverlay()
+
+-- Strategy player ------------------------------------------------------------
+
+local PlayerEngine = {
+    Active = false,
+    Paused = false,
+    StopRequested = false,
+    SkipRequested = false,
+    DryRun = false,
+    CurrentIndex = 0,
+    UnitById = {},
+    CompletedActionIds = {},
+    RunSerial = 0,
+}
+
+local function describeAction(action)
+    local text = tostring(action.Type or "Action")
+    if action.Unit or action.Template then
+        text = text .. " " .. tostring(action.Unit or action.Template)
+    end
+    if action.UnitId then
+        text = text .. " #" .. tostring(action.UnitId)
+    end
+    if action.Type == "Target" then
+        text = text .. " -> " .. tostring(action.Mode)
+    elseif action.Type == "Speed" then
+        text = text .. " x" .. tostring(action.Speed)
+    elseif action.Type == "Ability" then
+        text = text .. " " .. tostring(action.Ability or "Ability")
+    end
+    return text
+end
+
+local function waitPlayerGate()
+    while runtimeAlive() and PlayerEngine.Active and PlayerEngine.Paused and not PlayerEngine.StopRequested do
+        setPlayerStatus("Paused")
+        task.wait(0.10)
+    end
+    return runtimeAlive() and PlayerEngine.Active and not PlayerEngine.StopRequested
+end
+
+local function actionSkipped()
+    if PlayerEngine.SkipRequested then
+        PlayerEngine.SkipRequested = false
+        return true
+    end
+    return false
+end
+
+local function resolveGameplayRemotes()
+    return {
+        SpawnTower = waitForRemote({"SpawnTower", "PlaceTower", "CreateTower"}, "RemoteFunction", REMOTE_TIMEOUT),
+        UpgradeTower = remoteByNames({"UpgradeTower", "Upgrade"}, "RemoteFunction"),
+        SellTower = waitForRemote({"SellTower", "SellPlacedTower"}, "RemoteFunction", REMOTE_TIMEOUT),
+        ChangeTarget = remoteByNames({"ChangeTarget", "ChangeTargetMode", "SetTarget", "Target"}),
+        VoteSkip = remoteByNames({"VoteSkip", "SkipWave", "Skip"}, "RemoteEvent"),
+        Speed = remoteByNames({"Speed", "SetSpeed", "ChangeSpeed"}, "RemoteEvent"),
+        Ability = remoteByNames({"UseAbility", "ActivateAbility", "Ability"}),
+    }
+end
+
+local function waitForRequirement(predicate, timeout, interval)
+    local started = os.clock()
+    repeat
+        if PlayerEngine.SkipRequested then
+            PlayerEngine.SkipRequested = false
+            return false, "Skipped"
+        end
+        if not waitPlayerGate() then
+            return false, "Stopped"
+        end
+        local ok, result = pcall(predicate)
+        if ok and result then
+            return true, result
+        end
+        task.wait(interval or TECHNICAL_POLL)
+    until os.clock() - started >= timeout
+    return false, "Timed out"
+end
+
+local function waitForMoney(price, action)
+    local required = asNumber(price) or 0
+    if required <= 0 then
+        return true
+    end
+    setPlayerStatus("WaitingForMoney")
+    updateOverlay("Next: " .. describeAction(action) .. " | Waiting for $" .. required)
+    return waitForRequirement(function()
+        return currentBalanceNumber() >= required
+    end, MONEY_WAIT_TIMEOUT, TECHNICAL_POLL)
+end
+
+local function ownedTowersSnapshot()
+    local result = {}
+    local folder = towersFolder()
+    if folder then
+        for _, tower in ipairs(folder:GetChildren()) do
+            if tower:IsA("Model") and towerOwnerMatches(tower) then
+                result[tower] = towerSnapshot(tower)
+            end
+        end
+    end
+    return result
+end
+
+local function findNewTower(before, position, expectedName)
+    local folder = towersFolder()
+    if not folder then
+        return nil
+    end
+    local expected = resolveUnit(expectedName)
+    local best, bestDistance = nil, math.huge
+    for _, tower in ipairs(folder:GetChildren()) do
+        if tower:IsA("Model") and not before[tower] and towerOwnerMatches(tower) then
+            local pivot = safePivot(tower)
+            if pivot then
+                local resolved = resolveUnit(towerName(tower) or tower.Name)
+                local nameMatches = not expected or (resolved and resolved.CanonicalName == expected.CanonicalName)
+                local distance = (pivot.Position - position).Magnitude
+                if nameMatches and distance <= TOWER_POSITION_TOLERANCE and distance < bestDistance then
+                    best, bestDistance = tower, distance
+                end
+            end
+        end
+    end
+    return best
+end
+
+local function executePlace(action, remotes)
+    local cframe = actionCFrame(action)
+    if not cframe then
+        return false, "Invalid placement CFrame"
+    end
+    local unit = resolveUnit(action.Unit or action.Template)
+    if not unit then
+        return false, "Unit is unknown"
+    end
+    if not remotes.SpawnTower then
+        return false, "SpawnTower remote was not found"
+    end
+    local moneyOk, moneyReason = waitForMoney(action.Price, action)
+    if not moneyOk then
+        if moneyReason == "Skipped" then
+            return true, "Skipped by user"
+        end
+        return false, "Money wait " .. tostring(moneyReason)
+    end
+
+    for attempt = 1, MAX_ATTEMPTS do
+        if actionSkipped() then
+            return true, "Skipped by user"
+        end
+        if not waitPlayerGate() then
+            return false, "Player stopped"
+        end
+
+        setPlayerStatus("Executing")
+        updateOverlay("Executing: " .. describeAction(action) .. " | Attempt " .. attempt .. "/" .. MAX_ATTEMPTS)
+        local before = ownedTowersSnapshot()
+        local templateName = trim(action.Template) ~= "" and action.Template or unit.TemplateName
+        local sent, failure = callRemote(remotes.SpawnTower, {
+            {templateName, cframe},
+            {unit.CanonicalName, cframe},
+            {templateName, cframe.Position},
+        })
+        if sent then
+            setPlayerStatus("Confirming")
+            local confirmed, tower = waitForCondition(function()
+                return findNewTower(before, cframe.Position, unit.CanonicalName)
+            end, CONFIRM_TIMEOUT, TECHNICAL_POLL)
+            if confirmed and tower then
+                PlayerEngine.UnitById[action.UnitId] = tower
+                return true, tower
+            end
+        else
+            failure = tostring(failure)
+        end
+        if attempt < MAX_ATTEMPTS then
+            setPlayerStatus("Retrying")
+            task.wait(RETRY_DELAY)
+        end
+    end
+    return false, "Placement was not confirmed"
+end
+
+local function mappedTower(unitId)
+    local tower = PlayerEngine.UnitById[unitId]
+    if tower and tower.Parent then
+        return tower
+    end
+    PlayerEngine.UnitById[unitId] = nil
+    return nil
+end
+
+local function waitForMappedTower(unitId, action)
+    local tower = mappedTower(unitId)
+    if tower then
+        return tower
+    end
+    setPlayerStatus("WaitingForUnit")
+    updateOverlay("Next: " .. describeAction(action) .. " | Waiting for unit")
+    local ok, found = waitForRequirement(function()
+        return mappedTower(unitId)
+    end, MATCH_LOAD_TIMEOUT, TECHNICAL_POLL)
+    if ok then
+        return found
+    end
+    return nil, found
+end
+
+local function upgradeTemplate(tower)
+    local config = towerConfig(tower)
+    local upgrade = config and config:FindFirstChild("Upgrade")
+    return upgrade and upgrade:IsA("ObjectValue") and upgrade.Value or nil
+end
+
+local function executeUpgrade(action, remotes)
+    local tower, towerReason = waitForMappedTower(action.UnitId, action)
+    if not tower then
+        if towerReason == "Skipped" then
+            return true, "Skipped by user"
+        end
+        return false, "Upgrade unit was not found"
+    end
+
+    local nextTemplate = upgradeTemplate(tower)
+    local price = asNumber(action.Price)
+        or (nextTemplate and towerPrice(nextTemplate))
+        or asNumber(attributeOrValue(towerConfig(tower), {"UpgradePrice", "NextPrice"}))
+        or 0
+    local moneyOk, moneyReason = waitForMoney(price, action)
+    if not moneyOk then
+        if moneyReason == "Skipped" then
+            return true, "Skipped by user"
+        end
+        return false, "Money wait " .. tostring(moneyReason)
+    end
+
+    for attempt = 1, MAX_ATTEMPTS do
+        if actionSkipped() then
+            return true, "Skipped by user"
+        end
+        tower = mappedTower(action.UnitId)
+        if not tower then
+            return false, "Upgrade unit disappeared"
+        end
+        local beforeSnapshot = towerSnapshot(tower)
+        local nextModel = upgradeTemplate(tower)
+        setPlayerStatus("Executing")
+        updateOverlay("Executing: " .. describeAction(action) .. " | Attempt " .. attempt .. "/" .. MAX_ATTEMPTS)
+
+        local sent = false
+        if remotes.UpgradeTower then
+            sent = callRemote(remotes.UpgradeTower, {{tower}, {tower, nextModel and nextModel.Name}})
+        elseif remotes.SpawnTower and nextModel then
+            sent = callRemote(remotes.SpawnTower, {
+                {nextModel.Name, beforeSnapshot and CFrame.new(beforeSnapshot.Position) or tower:GetPivot(), tower},
+                {nextModel.Name, tower:GetPivot(), tower},
+            })
+        end
+
+        if sent then
+            setPlayerStatus("Confirming")
+            local confirmed, replacement = waitForCondition(function()
+                if tower.Parent then
+                    local latest = towerSnapshot(tower)
+                    if latest and beforeSnapshot and (latest.Level > beforeSnapshot.Level or latest.Template ~= beforeSnapshot.Template) then
+                        return tower
+                    end
+                end
+                if beforeSnapshot then
+                    local nearby = findTowerByPosition(beforeSnapshot.Position, beforeSnapshot.Name, tower)
+                    if nearby then
+                        local latest = towerSnapshot(nearby)
+                        if snapshotsMatchUpgrade(beforeSnapshot, latest) then
+                            return nearby
+                        end
+                    end
+                end
+                return nil
+            end, CONFIRM_TIMEOUT, TECHNICAL_POLL)
+            if confirmed and replacement then
+                PlayerEngine.UnitById[action.UnitId] = replacement
+                return true, replacement
+            end
+        end
+        if attempt < MAX_ATTEMPTS then
+            setPlayerStatus("Retrying")
+            task.wait(RETRY_DELAY)
+        end
+    end
+    return false, "Upgrade was not confirmed"
+end
+
+local function executeSell(action, remotes)
+    local tower, towerReason = waitForMappedTower(action.UnitId, action)
+    if not tower then
+        if towerReason == "Skipped" then
+            return true, "Skipped by user"
+        end
+        return true, "Unit is already absent"
+    end
+    if not remotes.SellTower then
+        return false, "SellTower remote was not found"
+    end
+
+    for attempt = 1, MAX_ATTEMPTS do
+        if actionSkipped() then
+            return true, "Skipped by user"
+        end
+        setPlayerStatus("Executing")
+        updateOverlay("Executing: " .. describeAction(action) .. " | Attempt " .. attempt .. "/" .. MAX_ATTEMPTS)
+        local sent = callRemote(remotes.SellTower, {{tower}, {action.UnitId, tower}})
+        if sent then
+            setPlayerStatus("Confirming")
+            local confirmed = waitForCondition(function()
+                return not tower.Parent
+            end, CONFIRM_TIMEOUT + SELL_GRACE_WINDOW, TECHNICAL_POLL)
+            if confirmed then
+                PlayerEngine.UnitById[action.UnitId] = nil
+                return true
+            end
+        end
+        if attempt < MAX_ATTEMPTS then
+            setPlayerStatus("Retrying")
+            task.wait(RETRY_DELAY)
+        end
+    end
+    return false, "Sell was not confirmed"
+end
+
+local function executeTarget(action, remotes)
+    local tower, towerReason = waitForMappedTower(action.UnitId, action)
+    if not tower then
+        if towerReason == "Skipped" then
+            return true, "Skipped by user"
+        end
+        return false, "Target unit was not found"
+    end
+    local desired = trim(action.Mode)
+    if desired == "" then
+        return false, "Target mode is missing"
+    end
+    if keyOf(towerTargetMode(tower)) == keyOf(desired) then
+        return true
+    end
+    if not remotes.ChangeTarget then
+        return false, "Target remote was not found"
+    end
+
+    for attempt = 1, MAX_ATTEMPTS do
+        if actionSkipped() then
+            return true, "Skipped by user"
+        end
+        setPlayerStatus("Executing")
+        updateOverlay("Executing: " .. describeAction(action) .. " | Attempt " .. attempt .. "/" .. MAX_ATTEMPTS)
+        local sent = callRemote(remotes.ChangeTarget, {{tower, desired}, {tower}, {action.UnitId, desired}})
+        if sent then
+            setPlayerStatus("Confirming")
+            local confirmed = waitForCondition(function()
+                return tower.Parent and keyOf(towerTargetMode(tower)) == keyOf(desired)
+            end, CONFIRM_TIMEOUT, TECHNICAL_POLL)
+            if confirmed then
+                return true
+            end
+        end
+        if attempt < MAX_ATTEMPTS then
+            setPlayerStatus("Retrying")
+            task.wait(RETRY_DELAY)
+        end
+    end
+    return false, "Target mode was not confirmed"
+end
+
+local function locateSkipButton()
+    if CachedGui.SkipButton and CachedGui.SkipButton.Parent then
+        return CachedGui.SkipButton
+    end
+    local root = PlayerGui:FindFirstChild("GameGui") or PlayerGui
+    for _, descendant in ipairs(root:GetDescendants()) do
+        if (descendant:IsA("TextButton") or descendant:IsA("ImageButton")) and keyOf(descendant.Name):find("skip", 1, true) then
+            CachedGui.SkipButton = descendant
+            return descendant
+        end
+    end
+    return nil
+end
+
+local function skipAvailable()
+    local explicit = attributeOrValue(infoFolder(), {"CanSkip", "SkipEnabled"})
+    if explicit == true or explicit == 1 then
+        return true
+    end
+    local button = locateSkipButton()
+    return button and button.Visible and button.Active
+end
+
+local function executeSkip(action, remotes)
+    if not remotes.VoteSkip then
+        return false, "VoteSkip remote was not found"
+    end
+    setPlayerStatus("WaitingForAvailability")
+    updateOverlay("Next: Skip wave | Waiting until skip becomes available")
+    local available, availabilityReason = waitForRequirement(skipAvailable, MONEY_WAIT_TIMEOUT, 0.10)
+    if not available then
+        if availabilityReason == "Skipped" then
+            return true, "Skipped by user"
+        end
+        return false, "Skip did not become available"
+    end
+
+    local beforeWave = currentWaveNumber()
+    for attempt = 1, MAX_ATTEMPTS do
+        if actionSkipped() then
+            return true, "Skipped by user"
+        end
+        setPlayerStatus("Executing")
+        updateOverlay("Executing: Skip wave | Attempt " .. attempt .. "/" .. MAX_ATTEMPTS)
+        local sent = callRemote(remotes.VoteSkip, {{}, {beforeWave}})
+        if sent then
+            setPlayerStatus("Confirming")
+            local confirmed = waitForCondition(function()
+                local afterWave = currentWaveNumber()
+                local votes = asNumber(attributeOrValue(infoFolder(), {"SkipPlayers", "SkipVotes"})) or 0
+                return afterWave > beforeWave or votes > 0 or not skipAvailable()
+            end, CONFIRM_TIMEOUT, TECHNICAL_POLL)
+            if confirmed then
+                return true
+            end
+        end
+        if attempt < MAX_ATTEMPTS then
+            setPlayerStatus("Retrying")
+            task.wait(RETRY_DELAY)
+        end
+    end
+    return false, "Skip was not confirmed"
+end
+
+local function executeSpeed(action, remotes)
+    local desired = asNumber(action.Speed)
+    if not desired then
+        return false, "Speed is invalid"
+    end
+    if math.abs(currentSpeedNumber() - desired) < 0.01 then
+        return true
+    end
+    if not remotes.Speed then
+        return false, "Speed remote was not found"
+    end
+
+    for attempt = 1, MAX_ATTEMPTS do
+        if actionSkipped() then
+            return true, "Skipped by user"
+        end
+        setPlayerStatus("Executing")
+        updateOverlay("Executing: Speed x" .. desired .. " | Attempt " .. attempt .. "/" .. MAX_ATTEMPTS)
+        local sent = callRemote(remotes.Speed, {{desired}})
+        if sent then
+            setPlayerStatus("Confirming")
+            local confirmed = waitForCondition(function()
+                return math.abs(currentSpeedNumber() - desired) < 0.01
+            end, CONFIRM_TIMEOUT, TECHNICAL_POLL)
+            if confirmed then
+                State.Speed = desired
+                return true
+            end
+        end
+        if attempt < MAX_ATTEMPTS then
+            setPlayerStatus("Retrying")
+            task.wait(RETRY_DELAY)
+        end
+    end
+    return false, "Speed was not confirmed"
+end
+
+local function executeAbility(action, remotes)
+    local tower, towerReason = waitForMappedTower(action.UnitId, action)
+    if not tower then
+        if towerReason == "Skipped" then
+            return true, "Skipped by user"
+        end
+        return false, "Ability unit was not found"
+    end
+    if not remotes.Ability then
+        return false, "Ability remote was not found"
+    end
+    local config = towerConfig(tower)
+    local cooldown = config and (config:FindFirstChild("AbilityCooldown") or config:FindFirstChild("Cooldown"))
+    local beforeCooldown = cooldown and cooldown.Value
+
+    for attempt = 1, MAX_ATTEMPTS do
+        if actionSkipped() then
+            return true, "Skipped by user"
+        end
+        setPlayerStatus("Executing")
+        updateOverlay("Executing: " .. describeAction(action) .. " | Attempt " .. attempt .. "/" .. MAX_ATTEMPTS)
+        local sent = callRemote(remotes.Ability, {
+            {tower, action.Ability or action.Name},
+            {tower},
+            {action.UnitId, action.Ability or action.Name},
+        })
+        if sent then
+            setPlayerStatus("Confirming")
+            local confirmed = waitForCondition(function()
+                if cooldown and cooldown.Parent then
+                    return cooldown.Value ~= beforeCooldown
+                end
+                return attributeOrValue(config, {"AbilityActive", "UsingAbility"}) == true
+            end, CONFIRM_TIMEOUT, TECHNICAL_POLL)
+            if confirmed then
+                return true
+            end
+        end
+        if attempt < MAX_ATTEMPTS then
+            setPlayerStatus("Retrying")
+            task.wait(RETRY_DELAY)
+        end
+    end
+    return false, "Ability was not confirmed"
+end
+
+local function executeAction(action, remotes)
+    if action.Type == "Place" then
+        return executePlace(action, remotes)
+    elseif action.Type == "Upgrade" then
+        return executeUpgrade(action, remotes)
+    elseif action.Type == "Sell" then
+        return executeSell(action, remotes)
+    elseif action.Type == "Target" then
+        return executeTarget(action, remotes)
+    elseif action.Type == "Skip" then
+        return executeSkip(action, remotes)
+    elseif action.Type == "Speed" then
+        return executeSpeed(action, remotes)
+    elseif action.Type == "Ability" then
+        return executeAbility(action, remotes)
+    end
+    return false, "Unsupported action type"
+end
+
+-- Loadout application --------------------------------------------------------
+
+local function applyStrategyLoadout(strategy)
+    if typeof(strategy.Loadout) ~= "table" then
+        return false, "Loadout is missing"
+    end
+    local equipRemote = remoteByNames({"EquipTower", "SetLoadout", "ApplyLoadout", "LoadLoadout"})
+    local unequipRemote = remoteByNames({"UnequipAll", "UnEquipAll", "ClearLoadout"})
+    if not equipRemote then
+        return false, "EquipTower/SetLoadout remote was not found"
+    end
+
+    if unequipRemote then
+        callRemote(unequipRemote, {{}})
+    end
+
+    for slotIndex = 1, 6 do
+        local unitName = strategy.Loadout[slotIndex]
+        if unitName and trim(unitName) ~= "" then
+            local entry = resolveUnit(unitName)
+            if not entry then
+                return false, "Unknown loadout unit: " .. tostring(unitName)
+            end
+            local sent = callRemote(equipRemote, {
+                {entry.CanonicalName, slotIndex, "None"},
+                {entry.TemplateName, slotIndex, "None"},
+                {slotIndex, entry.CanonicalName},
+                {entry.CanonicalName, slotIndex},
+            })
+            if not sent then
+                return false, "Could not equip " .. entry.CanonicalName .. " in slot " .. slotIndex
+            end
+        end
+    end
+
+    local confirmed = waitForCondition(function()
+        local deck = captureLoadout()
+        local required = 0
+        local matched = 0
+        for slotIndex = 1, 6 do
+            local expected = strategy.Loadout[slotIndex]
+            if expected and trim(expected) ~= "" then
+                required = required + 1
+                local actual = deck[slotIndex]
+                local expectedEntry = resolveUnit(expected)
+                local actualEntry = resolveUnit(actual)
+                if expectedEntry and actualEntry and expectedEntry.CanonicalName == actualEntry.CanonicalName then
+                    matched = matched + 1
+                end
+            end
+        end
+        return required > 0 and matched == required
+    end, 5, 0.15)
+
+    if not confirmed then
+        return false, "Loadout was not confirmed"
+    end
+    return true
+end
+
+-- Lobby automation -----------------------------------------------------------
+
+local function elevatorMatches(record, mapEntry, modeEntry)
+    if not record or not record.Model.Parent or not record.Platform then
+        return false
+    end
+    if not record.Map or not mapEntry then
+        return false
+    end
+    if keyOf(record.Map.InternalName) ~= keyOf(mapEntry.InternalName)
+        and not mapEntry.Aliases[keyOf(record.Map.DisplayName)]
+    then
+        return false
+    end
+    if modeEntry and record.Mode then
+        return record.Mode.CanonicalName == modeEntry.CanonicalName
+    end
+    return true
+end
+
+local function refreshElevatorRecords()
+    local folder = currentElevatorFolder()
+    if not folder then
+        return
+    end
+    for _, elevator in ipairs(folder:GetChildren()) do
+        scanElevator(elevator)
+    end
+end
+
+local function selectElevator(mapEntry, modeEntry)
+    refreshElevatorRecords()
+    local character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+    local root = character:WaitForChild("HumanoidRootPart", 15)
+    if not root then
+        return nil
+    end
+
+    local candidates = {}
+    for elevator, record in pairs(MapRegistry.Elevators) do
+        if elevatorMatches(record, mapEntry, modeEntry) then
+            record.Players = elevatorPlayerCount(elevator)
+            record.Platform = record.Platform and record.Platform.Parent and record.Platform or elevatorPlatform(elevator)
+            if record.Platform and record.Players == 0 then
+                table.insert(candidates, {
+                    Record = record,
+                    Distance = (root.Position - record.Platform.Position).Magnitude,
+                })
+            end
+        end
+    end
+    table.sort(candidates, function(a, b)
+        return a.Distance < b.Distance
+    end)
+    return candidates[1] and candidates[1].Record or nil
+end
+
+local function modeConfirmed(modeEntry)
+    if not modeEntry then
+        return true
+    end
+    local infoMode = currentModeName()
+    if keyOf(infoMode) == keyOf(modeEntry.CanonicalName) or keyOf(infoMode) == keyOf(modeEntry.DisplayName) then
+        return true
+    end
+    return false
+end
+
+local function runLobbyAutomation(strategy)
+    if strategy.AutoTeleport == false or State.Settings.AutoTeleport == false then
+        return true
+    end
+
+    local lobby = workspace:FindFirstChild("LOBBY_")
+    if not lobby then
+        return true
+    end
+    local elevators = lobby:FindFirstChild("Elevators") or lobby:WaitForChild("Elevators", 20)
+    if not elevators then
+        return false, "Elevators folder was not found"
+    end
+
+    local mapEntry = resolveMap(strategy.Map)
+    local modeEntry = resolveMode(strategy.Mode)
+    if not mapEntry then
+        return false, "Strategy map is missing"
+    end
+
+    State.RequestedMap = tostring(strategy.Map)
+    State.ResolvedMap = mapEntry.DisplayName
+    State.RequestedMode = trim(strategy.Mode) ~= "" and tostring(strategy.Mode) or "None"
+    State.ResolvedMode = modeEntry and modeEntry.CanonicalName or "Map-only"
+    State.EntryConfirmed = false
+    State.ModeConfirmed = modeEntry == nil
+    refreshLiveState()
+
+    local enterRemote = waitForRemote({"EnterElevator"}, "RemoteEvent", REMOTE_TIMEOUT)
+    local leaveRemote = remoteByNames({"LeaveElevator"}, "RemoteEvent")
+    local startRemote = waitForRemote({"StartElevator"}, "RemoteEvent", REMOTE_TIMEOUT)
+    local modeRemote = remoteByNames({"VoteForMode", "SelectMode", "SetMode", "VoteForMap"})
+    if not enterRemote or not startRemote then
+        return false, "EnterElevator or StartElevator remote was not found"
+    end
+
+    local searchStarted = os.clock()
+    while runtimeAlive() and os.clock() - searchStarted < ELEVATOR_SEARCH_TIMEOUT do
+        local selected = selectElevator(mapEntry, modeEntry)
+        if not selected then
+            setPlayerStatus("WaitingForElevator")
+            State.SelectedElevator = "Searching for an empty " .. mapEntry.DisplayName .. " elevator"
+            refreshLiveState()
+            task.wait(0.50)
+        else
+            State.SelectedElevator = selected.Model.Name
+            State.ElevatorPlayers = selected.Players
+            refreshLiveState()
+
+            local character = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+            local platform = selected.Platform
+            character:PivotTo(platform.CFrame * CFrame.new(0, platform.Size.Y / 2 + 3.5, 0))
+
+            local entered = callRemote(enterRemote, {{selected.Id}})
+            if entered then
+                local originalCount = selected.Players
+                local confirmed = waitForCondition(function()
+                    local count = elevatorPlayerCount(selected.Model)
+                    State.ElevatorPlayers = count
+                    return count > originalCount
+                end, 6, 0.10)
+                if confirmed then
+                    State.EntryConfirmed = true
+                    if elevatorPlayerCount(selected.Model) > 1 then
+                        if leaveRemote then
+                            callRemote(leaveRemote, {{selected.Id}})
+                        end
+                        State.EntryConfirmed = false
+                        State.SelectedElevator = "Occupied; searching again"
+                        task.wait(0.25)
+                    else
+                        if modeEntry and modeRemote then
+                            callRemote(modeRemote, {
+                                {modeEntry.CanonicalName},
+                                {selected.Id, modeEntry.CanonicalName},
+                            })
+                        end
+
+                        callRemote(startRemote, {{selected.Id}})
+
+                        if modeEntry then
+                            local modeOk = waitForCondition(function()
+                                if modeConfirmed(modeEntry) then
+                                    return true
+                                end
+                                if not workspace:FindFirstChild("LOBBY_") then
+                                    return true
+                                end
+                                if modeRemote then
+                                    callRemote(modeRemote, {
+                                        {modeEntry.CanonicalName},
+                                        {selected.Id, modeEntry.CanonicalName},
+                                    })
+                                end
+                                return false
+                            end, 30, 0.50)
+                            State.ModeConfirmed = modeOk == true
+                        else
+                            State.ModeConfirmed = true
+                        end
+                        refreshLiveState()
+                        return true
+                    end
+                end
+            end
+        end
+    end
+    return false, "No suitable empty elevator was found"
+end
+
+-- Strategy persistence through teleport -------------------------------------
+
+local function strategyJson(strategy)
+    local ok, encoded = pcall(HttpService.JSONEncode, HttpService, strategy)
+    return ok and encoded or nil
+end
+
+local function setTeleportStrategy(strategy)
+    local encoded = strategyJson(strategy)
+    if not encoded then
+        return false
+    end
+    local ok = pcall(function()
+        TeleportService:SetTeleportSetting(TELEPORT_STRATEGY_KEY, encoded)
+    end)
+    return ok
+end
+
+local function getTeleportStrategy()
+    local ok, encoded = pcall(function()
+        return TeleportService:GetTeleportSetting(TELEPORT_STRATEGY_KEY)
+    end)
+    if not ok or typeof(encoded) ~= "string" or encoded == "" then
+        return nil
+    end
+    local decodeOk, strategy = pcall(HttpService.JSONDecode, HttpService, encoded)
+    if decodeOk and typeof(strategy) == "table" then
+        pcall(function()
+            TeleportService:SetTeleportSetting(TELEPORT_STRATEGY_KEY, "")
+        end)
+        return strategy
+    end
+    return nil
+end
+
+-- Strategy execution ---------------------------------------------------------
+
+local function verifyMatchIdentity(strategy)
+    local mapEntry = resolveMap(strategy.Map)
+    local modeEntry = resolveMode(strategy.Mode)
+    local ready = waitForCondition(function()
+        local map = currentMapName()
+        return map ~= "" and keyOf(map) ~= "unknown"
+    end, 10, 0.10)
+    if not ready then
+        return false, "Current map was not published by the server"
+    end
+
+    local currentMap = resolveMap(currentMapName())
+    if mapEntry and currentMap and keyOf(mapEntry.InternalName) ~= keyOf(currentMap.InternalName) then
+        return false, "Current map " .. currentMapName() .. " does not match strategy map " .. mapEntry.DisplayName
+    end
+
+    if mapEntry and not mapEntry.IsMapOnly and modeEntry then
+        waitForCondition(function()
+            local mode = currentModeName()
+            return mode ~= "" and keyOf(mode) ~= "unknown"
+        end, 10, 0.10)
+        local currentMode = resolveMode(currentModeName())
+        if currentMode and currentMode.CanonicalName ~= modeEntry.CanonicalName then
+            return false, "Current mode " .. currentModeName() .. " does not match strategy mode " .. modeEntry.CanonicalName
+        end
+    end
+    return true
+end
+
+local function stopStrategy()
+    PlayerEngine.StopRequested = true
+    PlayerEngine.Active = false
+    PlayerEngine.Paused = false
+    setPlayerStatus("Stopped")
+    setNextOperation("None")
+    updateOverlay("Strategy Player: stopped")
+end
+
+local function pauseStrategy()
+    if PlayerEngine.Active then
+        PlayerEngine.Paused = true
+        setPlayerStatus("Paused")
+    end
+end
+
+local function resumeStrategy()
+    if PlayerEngine.Active then
+        PlayerEngine.Paused = false
+        setPlayerStatus("Running")
+    end
+end
+
+local function skipCurrentAction()
+    if PlayerEngine.Active then
+        PlayerEngine.SkipRequested = true
+    end
+end
+
+local function runStrategy(strategy, dryRun)
+    if PlayerEngine.Active then
+        return false, "A strategy is already running"
+    end
+
+    local valid, errors, warnings, normalized = validateStrategy(strategy)
+    local diagnostics = strategyDiagnostics(strategy)
+    setUiLabel("Validator", valid and "Strategy Validator: PASS" or ("Strategy Validator: FAIL | " .. table.concat(errors, " | ")))
+    setUiLabel("Diagnostics", "Strategy Diagnostics: " .. diagnosticsText(diagnostics))
+    if not valid then
+        return false, table.concat(errors, " | ")
+    end
+    if #warnings > 0 then
+        consoleWarn(table.concat(warnings, " | "))
+    end
+
+    State.Strategy = normalized
+
+    if dryRun == true then
+        PlayerEngine.Active = true
+        PlayerEngine.Paused = false
+        PlayerEngine.StopRequested = false
+        PlayerEngine.SkipRequested = false
+        PlayerEngine.DryRun = true
+        PlayerEngine.CurrentIndex = 0
+        PlayerEngine.RunSerial = PlayerEngine.RunSerial + 1
+        local thisRun = PlayerEngine.RunSerial
+        task.spawn(function()
+            setPlayerStatus("DryRun")
+            for index, action in ipairs(normalized.Actions) do
+                if not runtimeAlive() or PlayerEngine.RunSerial ~= thisRun or PlayerEngine.StopRequested then
+                    break
+                end
+                if not waitPlayerGate() then
+                    break
+                end
+                PlayerEngine.CurrentIndex = index
+                setNextOperation(describeAction(action))
+                updateOverlay("Dry Run: " .. describeAction(action) .. " [#" .. index .. "]")
+                task.wait(TECHNICAL_POLL)
+            end
+            if PlayerEngine.Active and not PlayerEngine.StopRequested then
+                setPlayerStatus("DryRunCompleted")
+                updateOverlay("Dry Run: completed without sending remotes")
+            end
+            PlayerEngine.Active = false
+            PlayerEngine.Paused = false
+            setNextOperation("None")
+        end)
+        return true
+    end
+
+    setTeleportStrategy(normalized)
+
+    if workspace:FindFirstChild("LOBBY_") then
+        local loadoutOk, loadoutFailure = applyStrategyLoadout(normalized)
+        if not loadoutOk then
+            consoleWarn("Loadout was not applied: " .. tostring(loadoutFailure))
+        end
+        local lobbyOk, lobbyFailure = runLobbyAutomation(normalized)
+        if not lobbyOk then
+            return false, lobbyFailure
+        end
+        return true, "Lobby automation started"
+    end
+
+    PlayerEngine.Active = true
+    PlayerEngine.Paused = false
+    PlayerEngine.StopRequested = false
+    PlayerEngine.SkipRequested = false
+    PlayerEngine.DryRun = dryRun == true
+    PlayerEngine.CurrentIndex = 0
+    PlayerEngine.RunSerial = PlayerEngine.RunSerial + 1
+    table.clear(PlayerEngine.UnitById)
+    table.clear(PlayerEngine.CompletedActionIds)
+    local thisRun = PlayerEngine.RunSerial
+
+    task.spawn(function()
+        local matchReady = waitForCondition(function()
+            return towersFolder() and infoFolder()
+        end, MATCH_LOAD_TIMEOUT, 0.10)
+        if not matchReady then
+            setLastError("Match did not load", "Strategy Player")
+            stopStrategy()
+            return
+        end
+
+        local identityOk, identityFailure = verifyMatchIdentity(normalized)
+        if not identityOk then
+            setLastError(identityFailure, "Match Validation")
+            appendFailure(identityFailure, nil, nil, "Match Validation")
+            stopStrategy()
+            return
+        end
+
+        local remotes = resolveGameplayRemotes()
+        setPlayerStatus(dryRun and "DryRun" or "Running")
+        updateOverlay(dryRun and "Dry Run: checking action sequence" or "Strategy Player: running instantly when available")
+
+        for index, action in ipairs(normalized.Actions) do
+            if not runtimeAlive() or PlayerEngine.RunSerial ~= thisRun or PlayerEngine.StopRequested then
+                break
+            end
+            if not waitPlayerGate() then
+                break
+            end
+
+            PlayerEngine.CurrentIndex = index
+            setNextOperation(describeAction(action))
+            local actionId = asNumber(action.ActionId) or index
+            if not PlayerEngine.CompletedActionIds[actionId] then
+                if dryRun then
+                    setPlayerStatus("DryRun")
+                    updateOverlay("Dry Run: " .. describeAction(action) .. " [#" .. index .. "]")
+                else
+                    setPlayerStatus("CheckingRequirements")
+                    local ok, failure = executeAction(action, remotes)
+                    if not ok then
+                        setPlayerStatus("Failed")
+                        setLastError(failure, "Action #" .. index)
+                        appendFailure(failure, action, index, "Action Execution")
+                        PlayerEngine.Active = false
+                        break
+                    end
+                end
+                PlayerEngine.CompletedActionIds[actionId] = true
+            end
+        end
+
+        if PlayerEngine.Active and not PlayerEngine.StopRequested then
+            setPlayerStatus(dryRun and "DryRunCompleted" or "Completed")
+            updateOverlay(dryRun and "Dry Run: completed" or "Strategy Player: all actions completed")
+        end
+        PlayerEngine.Active = false
+        PlayerEngine.Paused = false
+        setNextOperation("None")
+    end)
+
+    return true
+end
+
+Environment.HamsterHubAcceptStrategy = function(strategy, autoStart)
+    local valid, errors, _, normalized = validateStrategy(strategy)
+    if not valid then
+        setLastError(table.concat(errors, " | "), "Autoexec Strategy")
+        return false
+    end
+    State.Strategy = normalized
+    if autoStart then
+        task.defer(function()
+            local ok, failure = runStrategy(normalized, false)
+            if not ok then
+                setLastError(failure, "Autoexec Strategy")
+            end
+        end)
+    end
+    return true
+end
+
+-- Post-game automation -------------------------------------------------------
+
+local function openVipServer()
+    local url = "https://www.roblox.com/share?code=4396b9eeb786af4d9b28fc463d91a82c&type=Server"
+    local ok = pcall(function()
+        GuiService:OpenBrowserWindow(url)
+    end)
+    if not ok then
+        local setClipboard = FileSystem.functionFor("setclipboard")
+        if setClipboard then
+            pcall(setClipboard, url)
+        end
+    end
+    return ok
+end
+
+local function findEndVoteRemote(nameCandidates)
+    return remoteByNames(nameCandidates, "RemoteEvent") or remoteByNames(nameCandidates, "RemoteFunction")
+end
+
+local lastEndHandled = false
+local function handleMatchEnd()
+    if lastEndHandled then
+        return
+    end
+    lastEndHandled = true
+    if Recorder.Active then
+        stopRecorder()
+        saveRecording()
+    end
+    if State.Settings.AutoVipAfterGame then
+        openVipServer()
+        return
+    end
+    if State.Settings.AutoReplay then
+        local replay = findEndVoteRemote({"Replay", "VoteReplay", "RestartMatch"})
+        if replay then
+            callRemote(replay, {{}})
+        end
+    elseif State.Settings.AutoBackToLobby then
+        local back = findEndVoteRemote({"BackToLobby", "ReturnToLobby", "VoteBack"})
+        if back then
+            callRemote(back, {{}})
+        end
+    end
+end
+
+-- Background automation -----------------------------------------------------
+
+local AutoLoop = {
+    LastSkipWave = nil,
+    LastSpeedRequest = 0,
+}
+
+task.spawn(function()
+    while runtimeAlive() do
+        refreshLiveState()
+        if Recorder.Active and #Recorder.Actions > 0 then
+            saveAutosave()
+        end
+
+        local info = infoFolder()
+        local ended = attributeOrValue(info, {"Ended", "GameEnded", "Finished", "MatchEnded"})
+        if ended == true or ended == 1 then
+            handleMatchEnd()
+        elseif ended == false or ended == 0 or ended == nil then
+            lastEndHandled = false
+        end
+
+        if State.Settings.AutoSkip then
+            local wave = currentWaveNumber()
+            local voteSkip = remoteByNames({"VoteSkip", "SkipWave", "Skip"}, "RemoteEvent")
+            if voteSkip and wave > 0 and AutoLoop.LastSkipWave ~= wave and skipAvailable() then
+                AutoLoop.LastSkipWave = wave
+                if Recorder.Active and Recorder.LastSkipWave ~= wave then
+                    Recorder.LastSkipWave = wave
+                    appendRecordedAction({Type = "Skip"})
+                end
+                callRemote(voteSkip, {{}})
+            end
+        end
+
+        if State.Settings.AutoX2Speed then
+            local speed = currentSpeedNumber()
+            local remote = remoteByNames({"Speed", "SetSpeed", "ChangeSpeed"}, "RemoteEvent")
+            if remote and math.abs(speed - 2) > 0.01 and os.clock() - AutoLoop.LastSpeedRequest >= 2 then
+                AutoLoop.LastSpeedRequest = os.clock()
+                if Recorder.Active and Recorder.LastSpeed ~= 2 then
+                    Recorder.LastSpeed = 2
+                    appendRecordedAction({Type = "Speed", Speed = 2})
+                end
+                callRemote(remote, {{2}})
+            end
+        end
+
+        task.wait(0.50)
+    end
+end)
+
+-- Rayfield UI ----------------------------------------------------------------
+
+local function updateSetting(name, value)
+    State.Settings[name] = value == true
+    saveSettings()
+end
+
+local function loadRayfield()
+    if typeof(loadstring) ~= "function" then
+        return nil, "loadstring is unavailable"
+    end
+    local ok, source = pcall(function()
+        return game:HttpGet("https://sirius.menu/rayfield")
+    end)
+    if not ok then
+        return nil, "Rayfield download failed: " .. tostring(source)
+    end
+    local chunk, compileFailure = loadstring(source)
+    if not chunk then
+        return nil, "Rayfield compile failed: " .. tostring(compileFailure)
+    end
+    local runOk, library = pcall(chunk)
+    if not runOk then
+        return nil, "Rayfield startup failed: " .. tostring(library)
+    end
+    return library
+end
+
+local function createHubUi()
+    local rayfield, failure = loadRayfield()
+    if not rayfield then
+        setLastError(failure, "Rayfield")
+        return false
+    end
+    Ui.Rayfield = rayfield
+
+    local window = rayfield:CreateWindow({
+        Name = HUB_TITLE,
+        LoadingTitle = "Hamster Hub",
+        LoadingSubtitle = BUILD_ID,
+        ConfigurationSaving = {
+            Enabled = false,
+            FolderName = nil,
+            FileName = nil,
+        },
+        Discord = {Enabled = false},
+        KeySystem = false,
+    })
+    Ui.Window = window
+
+    local mainTab = window:CreateTab("Main", 4483362458)
+    local strategyTab = window:CreateTab("Strategy", 4483362458)
+    local recorderTab = window:CreateTab("Recorder", 4483362458)
+    local debugTab = window:CreateTab("Debug", 4483362458)
+
+    mainTab:CreateSection("Cleanroom Build")
+    Ui.Labels.Build = mainTab:CreateLabel("Build: " .. BUILD_ID)
+    Ui.Labels.Execution = mainTab:CreateLabel("Execution: InstantWhenAvailable — Time/Timing/Wave scheduling disabled")
+
+    mainTab:CreateSection("Automation")
+    Ui.Toggles.AutoTeleport = mainTab:CreateToggle({
+        Name = "Auto Teleport",
+        CurrentValue = State.Settings.AutoTeleport,
+        Flag = "R2AutoTeleport",
+        Callback = function(value)
+            updateSetting("AutoTeleport", value)
+        end,
+    })
+    Ui.Toggles.AutoSkip = mainTab:CreateToggle({
+        Name = "Auto Skip",
+        CurrentValue = State.Settings.AutoSkip,
+        Flag = "R2AutoSkip",
+        Callback = function(value)
+            updateSetting("AutoSkip", value)
+        end,
+    })
+    Ui.Toggles.AutoX2Speed = mainTab:CreateToggle({
+        Name = "Auto x2 Speed",
+        CurrentValue = State.Settings.AutoX2Speed,
+        Flag = "R2AutoX2Speed",
+        Callback = function(value)
+            updateSetting("AutoX2Speed", value)
+        end,
+    })
+    Ui.Toggles.AutoReplay = mainTab:CreateToggle({
+        Name = "Auto Replay",
+        CurrentValue = State.Settings.AutoReplay,
+        Flag = "R2AutoReplay",
+        Callback = function(value)
+            updateSetting("AutoReplay", value)
+            if value then
+                updateSetting("AutoBackToLobby", false)
+                updateSetting("AutoVipAfterGame", false)
+            end
+        end,
+    })
+    Ui.Toggles.AutoBackToLobby = mainTab:CreateToggle({
+        Name = "Auto Back to Lobby",
+        CurrentValue = State.Settings.AutoBackToLobby,
+        Flag = "R2AutoBack",
+        Callback = function(value)
+            updateSetting("AutoBackToLobby", value)
+            if value then
+                updateSetting("AutoReplay", false)
+                updateSetting("AutoVipAfterGame", false)
+            end
+        end,
+    })
+    Ui.Toggles.AutoVipAfterGame = mainTab:CreateToggle({
+        Name = "Auto VIP After Game",
+        CurrentValue = State.Settings.AutoVipAfterGame,
+        Flag = "R2AutoVip",
+        Callback = function(value)
+            updateSetting("AutoVipAfterGame", value)
+            if value then
+                updateSetting("AutoReplay", false)
+                updateSetting("AutoBackToLobby", false)
+            end
+        end,
+    })
+
+    mainTab:CreateButton({
+        Name = "Scan Maps and Elevators",
+        Callback = function()
+            refreshElevatorRecords()
+            local count = 0
+            for elevator, record in pairs(MapRegistry.Elevators) do
+                if elevator.Parent and record.Map then
+                    count = count + 1
+                end
+            end
+            rayfield:Notify({
+                Title = "Elevator Scanner",
+                Content = "Detected " .. count .. " elevators.",
+                Duration = 4,
+            })
+        end,
+    })
+
+    strategyTab:CreateSection("Strategy Player")
+    strategyTab:CreateButton({
+        Name = "Run Loaded Strategy",
+        Callback = function()
+            if not State.Strategy then
+                setLastError("No strategy is loaded", "Strategy Player")
+                return
+            end
+            local ok, runFailure = runStrategy(State.Strategy, false)
+            if not ok then
+                setLastError(runFailure, "Strategy Player")
+            end
+        end,
+    })
+    strategyTab:CreateButton({
+        Name = "Validate Strategy",
+        Callback = function()
+            if not State.Strategy then
+                setLastError("No strategy is loaded", "Strategy Validator")
+                return
+            end
+            local valid, errors, warnings = validateStrategy(State.Strategy)
+            setUiLabel("Validator", valid and "Strategy Validator: PASS" or ("Strategy Validator: FAIL | " .. table.concat(errors, " | ")))
+            if #warnings > 0 then
+                rayfield:Notify({Title = "Validator Warnings", Content = table.concat(warnings, " | "), Duration = 6})
+            end
+        end,
+    })
+    strategyTab:CreateButton({
+        Name = "Show Diagnostics",
+        Callback = function()
+            if not State.Strategy then
+                setLastError("No strategy is loaded", "Strategy Diagnostics")
+                return
+            end
+            setUiLabel("Diagnostics", "Strategy Diagnostics: " .. diagnosticsText(strategyDiagnostics(State.Strategy)))
+        end,
+    })
+    strategyTab:CreateButton({Name = "Pause", Callback = pauseStrategy})
+    strategyTab:CreateButton({Name = "Resume", Callback = resumeStrategy})
+    strategyTab:CreateButton({Name = "Skip Current Action", Callback = skipCurrentAction})
+    strategyTab:CreateButton({Name = "Stop Strategy", Callback = stopStrategy})
+    strategyTab:CreateButton({
+        Name = "Dry Run",
+        Callback = function()
+            if not State.Strategy then
+                setLastError("No strategy is loaded", "Dry Run")
+                return
+            end
+            local ok, runFailure = runStrategy(State.Strategy, true)
+            if not ok then
+                setLastError(runFailure, "Dry Run")
+            end
+        end,
+    })
+    Ui.Labels.Validator = strategyTab:CreateLabel("Strategy Validator: waiting for a strategy")
+    Ui.Labels.Diagnostics = strategyTab:CreateLabel("Strategy Diagnostics: waiting for a strategy")
+    Ui.Labels.PlayerStatus = strategyTab:CreateLabel("Strategy Player: Idle")
+
+    recorderTab:CreateSection("Macro Recorder")
+    recorderTab:CreateButton({Name = "Start Recording", Callback = startRecorder})
+    recorderTab:CreateButton({Name = "Stop Recording", Callback = stopRecorder})
+    recorderTab:CreateButton({Name = "Save Strat.txt", Callback = saveRecording})
+    recorderTab:CreateButton({
+        Name = "Restore Autosave",
+        Callback = function()
+            local source, readFailure = FileSystem.read(AUTOSAVE_PATH)
+            if not source then
+                setLastError(readFailure or "Autosave does not exist", "Autosave Recovery")
+                return
+            end
+            if typeof(loadstring) ~= "function" then
+                setLastError("loadstring is unavailable", "Autosave Recovery")
+                return
+            end
+            local chunk, compileFailure = loadstring(source)
+            if not chunk then
+                setLastError(compileFailure, "Autosave Recovery")
+                return
+            end
+            local ok, strategy = pcall(chunk)
+            if ok and typeof(strategy) == "table" then
+                State.Strategy = normalizeStrategy(strategy)
+                rayfield:Notify({Title = "Autosave Recovery", Content = "Autosave loaded.", Duration = 4})
+            else
+                setLastError(strategy, "Autosave Recovery")
+            end
+        end,
+    })
+    Ui.Labels.RecorderStatus = recorderTab:CreateLabel("Recorder: Stopped")
+    Ui.Labels.RecorderPath = recorderTab:CreateLabel("Save path: " .. STRATEGY_PATH)
+
+    debugTab:CreateSection("Live Status")
+    Ui.Labels.CurrentMap = debugTab:CreateLabel("Current map: Unknown")
+    Ui.Labels.CurrentMode = debugTab:CreateLabel("Current mode: Unknown")
+    Ui.Labels.Wave = debugTab:CreateLabel("Wave: 0")
+    Ui.Labels.GameTime = debugTab:CreateLabel("Time: Unknown (diagnostic only)")
+    Ui.Labels.Balance = debugTab:CreateLabel("Money: $0")
+    Ui.Labels.Speed = debugTab:CreateLabel("Current speed: x1")
+    Ui.Labels.Loadout = debugTab:CreateLabel("Detected loadout: Unavailable")
+    Ui.Labels.NextOperation = debugTab:CreateLabel("Next operation: None")
+    Ui.Labels.LastError = debugTab:CreateLabel("Last error: None")
+
+    debugTab:CreateSection("Elevator Scanner")
+    Ui.Labels.RequestedMap = debugTab:CreateLabel("Requested map: None")
+    Ui.Labels.ResolvedMap = debugTab:CreateLabel("Resolved map: None")
+    Ui.Labels.RequestedMode = debugTab:CreateLabel("Requested mode: None")
+    Ui.Labels.ResolvedMode = debugTab:CreateLabel("Resolved mode: None")
+    Ui.Labels.SelectedElevator = debugTab:CreateLabel("Selected elevator: None")
+    Ui.Labels.ElevatorPlayers = debugTab:CreateLabel("Players: 0")
+    Ui.Labels.EntryConfirmed = debugTab:CreateLabel("Entry confirmed: false")
+    Ui.Labels.ModeConfirmed = debugTab:CreateLabel("Mode confirmed: false")
+
+    debugTab:CreateSection("Registries")
+    Ui.Labels.UnitRegistry = debugTab:CreateLabel("Unit Registry: " .. UnitRegistry.Count .. " units")
+    local mapCount = 0
+    for _ in pairs(MapRegistry.Entries) do
+        mapCount = mapCount + 1
+    end
+    local modeCount = 0
+    for _ in pairs(ModeRegistry.Entries) do
+        modeCount = modeCount + 1
+    end
+    Ui.Labels.MapRegistry = debugTab:CreateLabel("Map Registry: " .. mapCount .. " maps")
+    Ui.Labels.ModeRegistry = debugTab:CreateLabel("Mode Registry: " .. modeCount .. " modes")
+    Ui.Labels.BuildDebug = debugTab:CreateLabel("Build: " .. BUILD_ID)
+
+    refreshLiveState()
+    return true
+end
+
+local uiCreated = createHubUi()
+if not uiCreated then
+    consoleWarn("Rayfield UI was not created; core systems remain active.")
+end
+
+-- Startup strategy handoff ---------------------------------------------------
+
+local TeleportedStrategy = getTeleportStrategy()
+if typeof(IncomingStrategy) == "table" then
+    State.Strategy = normalizeStrategy(IncomingStrategy)
+elseif typeof(TeleportedStrategy) == "table" then
+    State.Strategy = normalizeStrategy(TeleportedStrategy)
+end
+
+if State.Strategy then
+    local valid, errors, warnings = validateStrategy(State.Strategy)
+    setUiLabel("Validator", valid and "Strategy Validator: PASS" or ("Strategy Validator: FAIL | " .. table.concat(errors, " | ")))
+    setUiLabel("Diagnostics", "Strategy Diagnostics: " .. diagnosticsText(strategyDiagnostics(State.Strategy)))
+    if #warnings > 0 then
+        consoleWarn(table.concat(warnings, " | "))
+    end
+
+    task.defer(function()
+        local ok, failure = runStrategy(State.Strategy, false)
+        if not ok then
+            setLastError(failure, "Automatic Strategy Start")
+        end
+    end)
+end
+
+console("Loaded " .. BUILD_ID .. ". Unit Registry: " .. UnitRegistry.Count .. ".")
